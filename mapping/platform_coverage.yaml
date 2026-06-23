@@ -1,0 +1,336 @@
+# =============================================================================
+# Mapping spec: Ley 21.719 (CL) -> capacidades de la plataforma Qualys (TODOS los
+# módulos, no solo Policy Compliance). Fuente estructurada de LEY21719-PLATFORM-COVERAGE.md.
+# -----------------------------------------------------------------------------
+# Lo consume mapping/build_platform_matrix.py -> ley21719_platform_coverage_matrix.csv
+# (una fila por par obligación×módulo). Posicionamiento técnico-comercial, NO contrato.
+#
+# DISCIPLINA ANTI-OVERREACH (regla de oro): Qualys AUDITA/VERIFICA configuración,
+# DETECTA vulnerabilidades/exposición/compromiso, y PRODUCE EVIDENCIA. NO cifra, NO
+# respalda, NO recupera datos, NO clasifica jurídicamente el dato, NO cuenta titulares.
+# "auditar la config de X" != "hacer X"; "recolectar autodeclaración" != "verificar
+# técnicamente"; "contener un endpoint" != "restaurar disponibilidad del dato".
+#
+# Tipos de cobertura:
+#   full-in-domain    fit directo de la obligación DENTRO del dominio del módulo (no del artículo entero)
+#   detection-substrate  provee el sustrato de detección/verificación, no el control en sí
+#   evidence          produce la prueba auditable (acotada a lo que Qualys verifica)
+#   partial           cubre una pata; el resto es organizacional/diseño/legal
+#   out-of-scope      obligación organizacional/legal/business-decision sin pata técnica de seguridad
+#   zero              familia de obligaciones SIN ninguna pata Qualys (no inferir cobertura)
+#
+# grounding (a nivel módulo): grounded (anclado a KB/docs) · mixed (módulo grounded pero
+#   con features ASSUMPTION) · assumption (depende de feature/módulo sin cita firme).
+#   Los claims a re-anclar están en `assumptions` (los resuelve la fase de re-grounding).
+#
+# Numeración de artículos verificada vs Sources/Ley-21719_13-DIC-2024.pdf (principios en Art. 3°).
+# AMPLIAR/EDITAR = tocar este YAML y re-correr el builder; el CSV es derivado (no editar a mano).
+# =============================================================================
+
+meta:
+  law: "Ley 21.719 (CL) — protección de datos personales"
+  doc: "LEY21719-PLATFORM-COVERAGE.md"
+  note: "Mapeo Ley -> capacidades de plataforma Qualys. Técnico-comercial, NO compromiso contractual."
+
+# -----------------------------------------------------------------------------
+# Módulos de la plataforma (columnas de la matriz). primary_role = su tipo de
+# cobertura dominante frente a la ley (cada celda concreta puede variar).
+# -----------------------------------------------------------------------------
+modules:
+  - key: pc_pa
+    name: "Policy Compliance / Policy Audit"
+    domain: "config compliance & hardening"
+    primary_role: full-in-domain
+    grounding: grounded
+    note: "Audit Fix (PAF) y Control Criticality son add-ons opt-in, no vienen por defecto (ver assumptions)."
+  - key: vmdr_pm
+    name: "VMDR + Patch Management"
+    domain: "vulnerabilidades + remediación"
+    primary_role: full-in-domain
+    grounding: grounded
+    note: "TruRisk Isolate (anti-lateral); PM Mitigation reduce impacto sin desconectar."
+  - key: was_tas
+    name: "WAS / TotalAppSec"
+    domain: "web & API"
+    primary_role: full-in-domain
+    grounding: grounded
+    note: "Virtual patching depende de Qualys WAF (módulo aparte). 'Sensitive content' = detección por patrón, no DSPM."
+  - key: cs
+    name: "Container Security"
+    domain: "imágenes / registry / runtime / K8s"
+    primary_role: full-in-domain
+    grounding: grounded
+    note: "IaC posture vive en TotalCloud, NO en CS. Malware solo registry sensor; secrets solo filesystem de imagen."
+  - key: cspm
+    name: "TotalCloud / CloudView (CSPM)"
+    domain: "cloud posture + IaC"
+    primary_role: full-in-domain
+    grounding: grounded
+    note: "Incluye IaC Posture (pre-deploy) y CDR (Cloud Detection & Response, ex Blue Hexagon; runtime threat detection en TotalCloud, sin afirmar SKU/tier). Re-anclado jun-2026."
+  - key: etm_id
+    name: "ETM Identity"
+    domain: "identidad (AD / Entra ID)"
+    primary_role: full-in-domain
+    grounding: grounded
+    note: "Centrado en AD y Microsoft Entra ID; otros IdP no confirmados en KB."
+  - key: saq
+    name: "Security Assessment Questionnaire (SAQ)"
+    domain: "assessment organizativo (autodeclarado)"
+    primary_role: full-in-domain
+    grounding: grounded
+    note: "Recolecta autodeclaración (SIG/ISO/NIST/GDPR); NO verifica técnicamente por sí mismo."
+  - key: fim_fam
+    name: "FIM / FAM"
+    domain: "integridad de archivos & acceso a dato"
+    primary_role: detection-substrate
+    grounding: grounded
+    note: "FIM + FAM (File Access Monitoring) grounded: FAM documentado en FIM 4.0 (may-2024), incluido en la licencia FIM (mismo Cloud Agent), opt-in por regla. Re-anclado jun-2026."
+  - key: csam
+    name: "CyberSecurity Asset Management (CSAM)"
+    domain: "superficie / inventario de activos"
+    primary_role: detection-substrate
+    grounding: grounded
+    note: "CSAM + EASM grounded: EASM nativo en CSAM (CSAM 2.0/3.0), incluido en la suscripción CSAM (sin SKU aparte). Re-anclado jun-2026."
+  - key: edr
+    name: "EDR"
+    domain: "endpoint / IoC / contención"
+    primary_role: detection-substrate
+    grounding: grounded
+    note: "Quarantine 'limits network capabilities' = contención, NO restauración de disponibilidad del dato."
+  - key: certview
+    name: "Certificate View (CertView)"
+    domain: "TLS/SSL en tránsito"
+    primary_role: detection-substrate
+    grounding: grounded
+    note: "Detecta TLS débil/expirado en tránsito; no toca cifrado en reposo ni seudonimización."
+  - key: trurisk
+    name: "TruRisk / Reporting"
+    domain: "cuantificación de riesgo + evidencia"
+    primary_role: evidence
+    grounding: grounded
+    note: "Cuantifica riesgo (insumo de EIPD/14 quinquies); evidencia acotada a lo que Qualys verifica."
+
+# -----------------------------------------------------------------------------
+# Obligaciones técnicas de la ley (filas). `modules` = los que aportan una pata.
+# Vacío = sin pata Qualys (out-of-scope / zero). El builder emite una fila por
+# par (obligación × módulo), y una fila "—" para las obligaciones sin módulos.
+# -----------------------------------------------------------------------------
+obligations:
+  - id: art_3_c_inc2
+    article: "Art. 3° c) inc. 2"
+    title: "Proporcionalidad / retención del dato"
+    coverage_type: out-of-scope
+    modules: [csam]
+    scope_note: "Business-decision. Ciclo de vida del dato = plataforma del cliente. CSAM solo inventaría dónde viven los datos."
+  - id: art_3_f
+    article: "Art. 3° f)"
+    title: "Principio de seguridad (paraguas)"
+    coverage_type: detection-substrate
+    modules: [vmdr_pm, pc_pa, was_tas, cs, cspm, fim_fam, edr, csam, certview, trurisk]
+    scope_note: "Sustrato técnico del principio. Qualys detecta/verifica; NO implementa el control (cifrado/backup fuera)."
+  - id: art_3_h
+    article: "Art. 3° h)"
+    title: "Confidencialidad"
+    coverage_type: partial
+    modules: [pc_pa, was_tas, cspm, etm_id, cs, fim_fam]
+    scope_note: "Pata técnica (acceso/exposición) mapea; el deber de secreto de las personas es organizacional."
+  - id: art_8_bis_final
+    article: "Art. 8° bis inc. final"
+    title: "Decisiones automatizadas / perfilado"
+    coverage_type: out-of-scope
+    modules: []
+    scope_note: "Organizacional. Gobernanza de IA/explicabilidad. Sin fit Qualys."
+  - id: art_14_bis
+    article: "Art. 14 bis"
+    title: "Deber de secreto / confidencialidad"
+    coverage_type: detection-substrate
+    modules: [etm_id, cspm, fim_fam, csam]
+    scope_note: "Esencialmente NDA/políticas/governance. Qualys aporta detección de accesos indebidos a lo sumo."
+  - id: art_14_ter_e
+    article: "Art. 14 ter e)"
+    title: "Mantener publicada la política y medidas adoptadas"
+    coverage_type: evidence
+    modules: [pc_pa, cspm, csam, fim_fam]
+    scope_note: "Organizacional (transparencia). Qualys NUTRE el contenido; el acto de publicar es del responsable."
+  - id: art_14_quater
+    article: "Art. 14 quáter"
+    title: "Protección desde el diseño y por defecto + minimización"
+    coverage_type: partial
+    modules: [pc_pa, csam, was_tas, cs, cspm]
+    scope_note: "Pata técnica: hardening por defecto + reducción de superficie + IaC posture. Minimización a nivel de campo = sin pata (no DSPM)."
+  - id: art_14_quinquies_final
+    article: "Art. 14 quinquies (inc. final)"
+    title: "Acreditar existencia Y funcionamiento de las medidas (carga de la prueba)"
+    coverage_type: evidence
+    modules: [vmdr_pm, pc_pa, was_tas, cs, cspm, fim_fam, edr, saq, trurisk]
+    scope_note: "EL punto bisagra — acotado: evidencia de las medidas que Qualys MISMO verifica (config/vulns/postura), no de cifrado/backups/medidas organizativas."
+  - id: art_14_quinquies_a
+    article: "Art. 14 quinquies a)"
+    title: "Seudonimización y cifrado de datos personales"
+    coverage_type: detection-substrate
+    modules: [pc_pa, cspm, was_tas, cs, certview]
+    scope_note: "Business-decision. Qualys NO cifra/seudonimiza; a lo sumo DETECTA ausencia/debilidad vía checks de config."
+  - id: art_14_quinquies_b
+    article: "Art. 14 quinquies b)"
+    title: "Garantizar CIA y resiliencia permanentes"
+    coverage_type: detection-substrate
+    modules: [vmdr_pm, pc_pa, was_tas, cs, cspm, etm_id, fim_fam, edr, csam, certview]
+    scope_note: "Corazón del fit. Verifica/monitorea estado CIA; la garantía operativa/resiliencia (HA, backups) la dan otras capas."
+  - id: art_14_quinquies_c
+    article: "Art. 14 quinquies c)"
+    title: "Restaurar disponibilidad y acceso tras incidente"
+    coverage_type: out-of-scope
+    modules: []
+    scope_note: "Business-decision. Backup/DR/RTO-RPO. Qualys NO restaura; contención (EDR) != restauración del dato."
+  - id: art_14_quinquies_d
+    article: "Art. 14 quinquies d)"
+    title: "Proceso de verificación/evaluación REGULAR de la eficacia"
+    coverage_type: full-in-domain
+    modules: [pc_pa, vmdr_pm, was_tas, cs, cspm, etm_id, saq, trurisk]
+    scope_note: "El fit MÁS directo — pero per-dominio, no del artículo entero. Cada módulo ES el proceso de verificación de SU dominio. SAQ = assessment organizativo autodeclarado."
+  - id: art_14_septies
+    article: "Art. 14 septies"
+    title: "Diferenciación de estándares (tipo de dato/tamaño/actividad/volumen)"
+    coverage_type: partial
+    modules: [pc_pa, vmdr_pm, csam, trurisk]
+    scope_note: "Scoping regulatorio. Qualys HABILITA estándares diferenciados (criticidad/policies) pero NO gradúa por categoría de dato. El mínimo lo fija la Agencia."
+  - id: art_14_sexies_1
+    article: "Art. 14 sexies inc. 1"
+    title: "Reportar a la Agencia las vulneraciones con riesgo razonable"
+    coverage_type: detection-substrate
+    modules: [vmdr_pm, fim_fam, edr, was_tas, cs, cspm, etm_id]
+    scope_note: "Qualys DETECTA y fundamenta el evento; el ACTO de reportar a la Agencia es organizacional."
+  - id: art_14_sexies_2
+    article: "Art. 14 sexies inc. 2"
+    title: "Registrar las brechas (naturaleza, categorías de dato, nº titulares, medidas)"
+    coverage_type: partial
+    modules: [vmdr_pm, pc_pa, was_tas, cs, cspm, etm_id, fim_fam, edr, csam]
+    scope_note: "PARCIAL — el núcleo del registro queda fuera. Qualys aporta datos técnicos del evento; categorías de dato y nº de titulares = organizacional/jurídico (no clasifica ni cuenta)."
+  - id: art_14_sexies_3
+    article: "Art. 14 sexies inc. 3"
+    title: "Notificar a los titulares en lenguaje claro"
+    coverage_type: out-of-scope
+    modules: [csam, fim_fam]
+    scope_note: "Organizacional/legal. Qualys ayuda indirectamente a saber qué sistemas están en juego; NO clasifica ni notifica."
+  - id: art_15_bis_5
+    article: "Art. 15 bis inc. 5"
+    title: "El encargado/procesador cumple 14 bis y 14 quinquies"
+    coverage_type: partial
+    modules: [saq, pc_pa, vmdr_pm, was_tas, cs, cspm, etm_id, fim_fam, edr, csam, certview, trurisk]
+    scope_note: "PARCIAL. SAQ recolecta la autodeclaración del encargado (!= verificar técnicamente). Si hay acceso a su entorno, los demás módulos lo verifican. La extensión del deber es legal/contractual."
+  - id: art_15_ter
+    article: "Art. 15 ter"
+    title: "EIPD / DPIA cuando hay alto riesgo"
+    coverage_type: evidence
+    modules: [trurisk, vmdr_pm, pc_pa, was_tas, cs, cspm, etm_id, saq]
+    scope_note: "Organizacional/gobernanza. Qualys ALIMENTA la sección de riesgos técnicos; realizar la EIPD es del responsable."
+  - id: art_16
+    article: "Art. 16 / 16 bis / 16 ter"
+    title: "Datos sensibles: garantías reforzadas"
+    coverage_type: detection-substrate
+    modules: [pc_pa, vmdr_pm, was_tas, cs, cspm, etm_id, fim_fam, edr, csam]
+    scope_note: "El estándar reforzado eleva el nivel exigible sobre los sistemas que alojan datos sensibles. Qualys NO identifica jurídicamente qué dato es sensible (sin DSPM); protege los sistemas. Consentimiento = fuera."
+  - id: art_16_quinquies_2
+    article: "Art. 16 quinquies inc. 2"
+    title: "Fines científicos/estadísticos: adoptar y ACREDITAR medidas"
+    coverage_type: evidence
+    modules: [vmdr_pm, trurisk, pc_pa, was_tas, cs, cspm, etm_id, fim_fam, edr, csam]
+    scope_note: "Identificar riesgos + mitigar + acreditar mapea bien. La identificación de riesgos de RE-IDENTIFICACIÓN del dato es analítica de privacidad, fuera de Qualys."
+  - id: art_16_sexies_2
+    article: "Art. 16 sexies inc. 2"
+    title: "Geolocalización: informar tipo/finalidad/duración/cesión"
+    coverage_type: out-of-scope
+    modules: []
+    scope_note: "Organizacional (transparencia específica). Sin pata técnica de seguridad."
+  - id: zero_consentimiento
+    article: "Art. 16 y conexos"
+    title: "Consentimiento y bases de licitud"
+    coverage_type: zero
+    modules: []
+    scope_note: "CERO. Qualys no captura, gestiona ni evidencia consentimiento."
+  - id: zero_arco
+    article: "Derechos del titular (ARCO+)"
+    title: "Acceso/rectificación/cancelación/oposición/portabilidad"
+    coverage_type: zero
+    modules: []
+    scope_note: "CERO. Sin pata Qualys; proceso/aplicación del cliente."
+  - id: zero_dspm
+    article: "Clasificación jurídica del dato"
+    title: "DSPM / Data Discovery de contenido / clasificación del dato"
+    coverage_type: zero
+    modules: []
+    scope_note: "CERO sobre la clasificación del dato. Qualys NO tiene DSPM. Deja descubiertos: clasificación, minimización a nivel de campo, determinación de categorías/nº de titulares."
+
+# -----------------------------------------------------------------------------
+# Claims RE-ANCLADOS (verificación adversarial vs docs públicas de Qualys, jun-2026;
+# workflow reground-ley21719-assumptions, 6/6 grounded, 0 desacuerdos del verificador).
+# status: grounded (afirmable, con la redacción de `statement`) | pending | retracted.
+# -----------------------------------------------------------------------------
+assumptions:
+  - key: csam_easm
+    module: csam
+    claim: "EASM / External Attack Surface Management de CSAM"
+    status: grounded
+    statement: "EASM es nativo de CSAM (CSAM 2.0, ago-2022; ampliado en 3.0, 2024); disponible con suscripción CSAM, NO es un SKU aparte. Vista outside-in de activos expuestos a Internet."
+    sources:
+      - "https://docs.qualys.com/en/csam/latest/inventory/sensors/easm.htm"
+      - "https://www.qualys.com/company/newsroom/news-releases/usa/qualys-launches-external-attack-surface-management-easm"
+  - key: fim_fam
+    module: fim_fam
+    claim: "FAM (File Access Monitoring) — acceso no autorizado a dato sensible en tiempo real"
+    status: grounded
+    statement: "Qualys FIM incluye FAM: alertas en tiempo real ante acceso no autorizado a archivos sensibles (who/what/when/where), aun sin modificación. FIM 4.0 (may-2024), incluido en la licencia FIM (mismo Cloud Agent), opt-in por regla. Pata más directa de 3° h)/14 bis/16."
+    sources:
+      - "https://docs.qualys.com/en/fim/latest/get_started/get_started_with_fim.htm"
+      - "https://blog.qualys.com/product-tech/2024/04/10/real-time-file-access-monitoring-fam-with-qualys-fim"
+  - key: totalcloud_cdr
+    module: cspm
+    claim: "TotalCloud CDR (Cloud Detection & Response)"
+    status: grounded
+    statement: "CDR es real: runtime threat detection (ex Blue Hexagon CTDR) integrado en TotalCloud (Deep Learning, multi-cloud). Describir como 'capacidad de TotalCloud (CNAPP runtime threat detection), tier según Qualys' — NO afirmar SKU/tier específico."
+    sources:
+      - "https://docs.qualys.com/en/cloudview/latest//cloud_detection_and_response/cloud_detection_and_response.htm"
+      - "https://blog.qualys.com/product-tech/2023/02/09/announcing-general-availability-of-qualys-totalcloud"
+  - key: sca_host
+    module: vmdr_pm
+    claim: "SCA / SBOM a nivel host (apps no containerizadas)"
+    status: grounded
+    statement: "Qualys SwCA (Software Composition Analysis) hace SCA + SBOM a nivel HOST vía Cloud Agent (Win/Linux; Ruby/Node/Go/Rust/PHP/Python/Java SE; SBOM CycloneDX 1.4/1.6 por UI y API). OJO: es OTRO motor (SwCA, activación propia, requiere VM), NO Policy Compliance -> pc_importable:false (plano additional_domains). Detecta inventario/vulns de OSS, no audita config CIS."
+    sources:
+      - "https://docs.qualys.com/en/ca/swca-user-guide/introduction/introduction.htm"
+      - "https://docs.qualys.com/en/ca/swca-user-guide/swca_scan_settings_config/download_sbom.htm"
+  - key: pc_paf_criticality
+    module: pc_pa
+    claim: "Audit Fix (PAF) + Control Criticality (5 niveles)"
+    status: grounded
+    statement: "CONFIRMADO opt-in (no default): Audit Fix/PAF es add-on con licencia propia (trial-then-purchase, requiere Cloud Agent + rol Manager/Unit Manager); Control Criticality (5 niveles) lo habilita Support/Account Manager para la suscripción. Confirmar ambos activos en el tenant antes de prometerlos."
+    sources:
+      - "https://docs.qualys.com/en/pa/latest/auto_remediation/creating_remediation_job.htm"
+      - "https://docs.qualys.com/en/pa/latest/controls/control_criticality.htm"
+
+# -----------------------------------------------------------------------------
+# Superficie de API CSPM (CloudView / TotalCloud) — verificada vs CloudView API User
+# Guide (jun-2026). READ-ONLY = solo GET; la consume qualys_client.CloudViewClient
+# (gate allow-list-only). Mutaciones (connector run, report create) = POST/PUT/DELETE
+# -> bloqueadas. ETM Identity es OTRA plataforma (JWT, POST-based) -> cliente aparte.
+# -----------------------------------------------------------------------------
+cspm_api:
+  base_path: "/cloudview-api/rest/v1"
+  auth: "HTTP Basic + X-Requested-With (igual que el cliente FO/QPS)"
+  read_only_endpoints:
+    controls_metadata: "GET /cloudview-api/rest/v1/controls/metadata/list"
+    connectors: "GET /cloudview-api/rest/v1/{aws|azure|gcp}/connectors[/{connectorId}]"
+    connector_groups: "GET /cloudview-api/rest/v1/groups[/{groupUuid}]"
+    evaluations: "GET /cloudview-api/rest/v1/{aws|azure|gcp}/evaluations/{accountId|subscriptionId|projectId}"
+    evaluations_oci: "GET /cloudview-api/rest/v1/oci/evaluations/?tenantId={id}  (confirmado verbatim)"
+    evaluation_resources: "GET /cloudview-api/rest/v1/{provider}/evaluations/{account}/resources/{controlId}"
+    evaluation_stats: "GET /cloudview-api/rest/v1/{provider}/evaluations/stats/{controlId}/{connectorId}"
+    report_list: "GET /cloudview-api/rest/v1/report/assessment/list"
+    report_download: "GET /cloudview-api/rest/v1/report/assessment/{reportId}/download"
+  blocked_mutations: "connector create/run/enable/disable/delete + report create/rerun (POST/PUT/PATCH/DELETE)"
+  verified_live: "Smoke US03, jun-2026: host CSPM = qualysguard.qg3 (el FO qualysapi.qg3 da 404, gateway.qg3 da 401). controls/metadata/list, {provider}/connectors y {provider}/evaluations/{account} -> HTTP 200. Shapes: controls bajo clave 'control' (controlName/serviceType/policyNames); connectors+evaluations con paginación Spring bajo 'content'; evaluations trae controlId/controlName/service/result(PASS/FAIL)/policyNames (autosuficiente por cuenta). E2E real: 168 controles AWS evaluados, clasificados, 116 FAIL."
+  caveats:
+    - "Host CSPM = qualysguard.<seg> (RESUELTO live US03). El cliente deriva qualysapi.<seg> -> qualysguard.<seg> por defecto; override con server=. Confirmar el patrón en otros PODs."
+    - "evaluations/{account}/resources/{controlId} CONFIRMADO live (AWS+GCP, 200, paginado bajo content con resourceId/region/evidences). El subpath /stats/{controlId}/{connectorId} queda sin ejercitar (PARTIAL)."
+    - "Connector API v3 (centralizado) en migración; para LISTAR (read-only) los GET v1 bastan."
+    - "§7#8 rol: el smoke usó un usuario MANAGER (read+write a todo). El invariante read-only del CLIENTE se sostiene igual (solo emite GETs allow-list; no expone escritura), independiente del rol de la credencial. PERO NO se validó que un rol estrictamente Reader pueda correr evaluations/reports -> para despliegue cliente, recomendar credencial de mínimo privilegio (Reader) y confirmarla en su tenant."

@@ -1,0 +1,237 @@
+# =============================================================================
+# Mapping spec: Ley 21.719 (CL) -> controles técnicos de Qualys Policy Compliance
+# -----------------------------------------------------------------------------
+# Convierte las OBLIGACIONES DE SEGURIDAD de la ley en un Policy XML importable.
+# Lo consume compliance_pack/generator.py. Editable por humano (revisión SME).
+#
+# ALCANCE (leer): Qualys PC audita controles técnicos de configuración. La Ley
+# 21.719 es, en su mayoría, organizacional/legal (consentimiento, derechos del
+# titular, registro de actividades, DPO, transferencias, sanciones, la Agencia).
+# Este pack cubre SOLO el pilar técnicamente auditable: el "deber de seguridad"
+# (Art. 14 quinquies), confidencialidad (Art. 14 bis), protección desde el diseño
+# (Art. 14 quater) y el sustrato de deteccion de brechas (Art. 14 sexies).
+# NO representa la ley entera. Ver `gaps` al final.
+# =============================================================================
+
+law:
+  id: "ley-21719"
+  title: "Ley 21.719 — Regula la protección y el tratamiento de los datos personales y crea la Agencia de Protección de Datos Personales"
+  jurisdiction: "Chile"
+  published: "2024-12-13"
+  source: "Sources/Ley-21719_13-DIC-2024.pdf (BCN, www.leychile.cl)"
+
+policy:
+  # Título de la policy resultante (el cliente puede cambiarlo al importar con &title=)
+  title: "Ley 21.719 - Medidas de Seguridad del Tratamiento (controles tecnicos) [qley21719]"
+  status: "active"
+  # Texto de portada (COVER_PAGE). El generador le agrega provenance (fecha, fuentes, conteos).
+  cover_page: >-
+    Baseline de controles tecnicos que evidencian el cumplimiento de las OBLIGACIONES
+    DE SEGURIDAD de la Ley 21.719 de Chile (proteccion de datos personales): principio
+    y deber de seguridad (Art. 3 f y Art. 14 quinquies), deber de secreto/confidencialidad
+    (Art. 14 bis y Art. 3 h), proteccion desde el diseno y por defecto (Art. 14 quater) y
+    el sustrato de deteccion/registro para el reporte de vulneraciones (Art. 14 sexies).
+    NO cubre las obligaciones organizacionales/legales de la ley (consentimiento, derechos
+    del titular, registro de actividades, transferencias, etc.). Generado por qley21719 a
+    partir de benchmarks de libreria de Qualys; el responsable debe ajustar valores
+    esperados, alcance (asset tags/groups) y excepciones a su nivel de riesgo (Art. 14 septies).
+
+# Policies de libreria de las que se COSECHAN los controles (con sus EVALUATE por
+# tecnologia ya validados). IDs del tenant US03 — descubiertos con action=list.
+# Cambiables por --sources en la CLI.
+#
+# AMPLIAR COBERTURA (Ubuntu / Oracle DB / PostgreSQL u otra tecnologia):
+#   El "Import from Library" NO es API-able (es un wizard de UI y ademas una MUTACION) —
+#   ver https://docs.qualys.com/en/pa/latest/policies/import_policy_library.htm. Workflow:
+#   1. El CLIENTE importa el benchmark (human-gate): PA > Policies > New > Policy >
+#      Import from Library -> "CIS Ubuntu Linux 22.04/24.04 LTS", "CIS Oracle Database 19c",
+#      "CIS PostgreSQL 15/16", etc.
+#   2. la herramienta (read-only) enumera el ID con qualys_pc_list_policies (FO compliance/policy list).
+#   3. Agregar el id/label/tech a esta lista y regenerar.
+#   No hace falta tocar `families`: los controles de Oracle DB/PostgreSQL caen en las
+#   sub-categorias `DB *` ya mapeadas y los de Ubuntu en `OS Security Settings` (Hardening).
+#   Verificar el conteo `unclassified` del summary/gaps tras regenerar; si algun control queda
+#   sin familia, sumar su CATEGORY/SUB_CATEGORY al `match` de la familia que corresponda.
+sources:
+  - id: "6327222"
+    label: "CIS Microsoft Windows Server 2016 STIG v3.0.0"
+    tech: "Windows Server 2016"
+  - id: "6319663"
+    label: "CIS Azure Microsoft Windows Server 2022 v1.0.0"
+    tech: "Windows Server 2022"
+  - id: "6234370"
+    label: "CIS Oracle Linux 9 v2.0.0"
+    tech: "Linux (RHEL family)"
+  - id: "6191563"
+    label: "CIS SUSE Linux Enterprise 11.x v2.1.0"
+    tech: "Linux (SUSE)"
+  - id: "6199174"
+    label: "NCSC Cyber Essentials for Linux v1.0"
+    tech: "Linux (generic)"
+  - id: "6316914"
+    label: "CIS Microsoft SQL Server 2022 v1.2.0"
+    tech: "Database (SQL Server)"
+  # Importadas de librería por el cliente (human-gate) el 2026-06-22 (ampliación Tarea 1):
+  - id: "6336936"
+    label: "CIS Ubuntu Linux 22.04 LTS v3.0.0 [L1+L2]"
+    tech: "Linux (Ubuntu 22.04)"
+  - id: "6336938"
+    label: "CIS Oracle Database 19c v2.0.0 [RDBMS + On Host OS]"
+    tech: "Database (Oracle 19c)"
+  - id: "6336008"
+    label: "CIS Oracle Database 19c Multitenant v2.0.0 [RDBMS + On Host OS]"
+    tech: "Database (Oracle 19c Multitenant)"
+  - id: "6336939"
+    label: "CIS PostgreSQL 16 v1.1.0 [L1 + on Linux]"
+    tech: "Database (PostgreSQL 16)"
+  - id: "6336940"
+    label: "CIS PostgreSQL 15 v1.2.0 [L1 + on Linux]"
+    tech: "Database (PostgreSQL 15)"
+  # Endpoints (alcance ampliado 2026-06-22: el dato personal tambien se accede en escritorios).
+  # Ya estaba importada en el tenant; pendientes de importar por el cliente: CIS Win 10, WS2019, macOS.
+  - id: "6296903"
+    label: "CIS Microsoft Windows 11 Enterprise v3.0.0 [All Profiles] (ES)"
+    tech: "Windows 11"
+  - id: "6336942"
+    label: "CIS Microsoft Windows 10 Enterprise v4.0.0 [L1+L2]"
+    tech: "Windows 10"
+  - id: "6336010"
+    label: "CIS Microsoft Windows Server 2019 v4.0.0 [Member Server, todos los perfiles]"
+    tech: "Windows Server 2019"
+  # macOS 10.15 (Catalina) = la version CIS disponible en la libreria; OJO: la flota US03 tiene
+  # macOS 15/26 -> los controles 10.15 cosechan/importan bien pero NO evaluan esos hosts (tech distinta).
+  - id: "6336009"
+    label: "CIS Apple macOS 10.15 v3.0.0 [L1+L2]"
+    tech: "macOS 10.15"
+
+# Niveles diferenciados (Art. 14 septies). La ley habilita estandares de seguridad
+# distintos segun el TIPO de dato (sensibles, de ninos/adolescentes, geolocalizacion,
+# situacion socioeconomica, financieros) y el tamano/actividad del responsable. Se emite
+# UN pack por nivel usando la CRITICALITY que cada control ya trae como palanca de filtro
+# (0=UNDEFINED · 1=MINIMAL · 2=MEDIUM · 3=SERIOUS · 4=CRITICAL · 5=URGENT):
+#   - base:     piso SERIOUS (>=3)  -> subconjunto de alta severidad (estandar general).
+#   - sensible: sin piso (>=0)      -> TODOS los controles cosechados (refuerzo para datos
+#                                      sensibles / de menores / financieros).
+# Invariante: base ⊆ sensible (mismo harvest; base solo filtra mas fuerte -> conteo menor).
+# El generador emite cada nivel en su subcarpeta (<out>/base, <out>/sensible) y refleja el
+# nivel en el TITLE (sufijo) y el COVER_PAGE (cita Art. 14 septies). CLI: --level base|sensible
+# genera uno solo; sin flag, ambos.
+levels:
+  base:
+    title_suffix: "(nivel base)"
+    min_criticality: 3        # SERIOUS o superior
+  sensible:
+    title_suffix: "(datos sensibles)"
+    min_criticality: 0        # todo lo cosechado (incl. criticidad UNDEFINED)
+
+# Fallback de clasificacion agnostico (robustez ante benchmarks ARBITRARIOS): un control que NO
+# matchea ninguna regla SUB/CATEGORY de `families` cae en `default_family` — SALVO que su SUB_CATEGORY
+# este en `exclude_sub_categories`, en cuyo caso se DESCARTA a proposito (no es control de seguridad,
+# p.ej. tuning/performance). default_family = hardening: "configuracion segura" es el catch-all natural
+# del deber de seguridad (Art. 3 f / 14 quater). Debe ser un id existente de `families`; vacio/ausente =
+# sin fallback (retrocompat: el control queda unclassified, como antes).
+# NOTAS (footguns):
+#   - El exclude es un FALLBACK, no un gate: si el SUB/CATEGORY de un control matchea una familia
+#     explicita, GANA la familia y el exclude NO aplica (la precedencia es SUB -> CATEGORY -> fallback).
+#   - `unclassified` tiende a 0 SOLO si el catalogo (compliance/control) resuelve CATEGORY/SUB de cada
+#     CID cosechado; un CID sin metadata queda unclassified igual (no lo agarra el default).
+#   - `exclude_sub_categories` es un PISO no exhaustivo (curado al harvest actual): al sumar benchmarks,
+#     revisar la seccion "asignados por default (REVISAR)" de gaps.md y `config_warnings` del summary.
+#   - Los controles asignados por el default se LISTAN en gaps.md para revision humana (no son ciegos).
+classification:
+  default_family: "hardening"
+  exclude_sub_categories:
+    - "DB Performance and Tuning"   # tuning de DB: no es control de seguridad -> fuera del pack
+
+# Familias = secciones del Policy XML. Un control se asigna a UNA familia.
+# Regla de clasificacion: primero por SUB_CATEGORY (para partir "Database Settings"), luego por
+# CATEGORY, luego el fallback `classification` de arriba. Lo que no matchea NI cae en default y no
+# esta excluido -> gaps.md (no se inventa familia).
+#
+# COBERTURA POR MODULO (ver mapping/cis_catalog.yaml para el mapeo tecnologia->benchmark):
+#   - Host OS / DB / web-middleware / red / virtualizacion: clasifican con las reglas de abajo.
+#   - CONTENEDORES (CIS Docker / Kubernetes Benchmark, kind=container): sus controles cosechados
+#     caen en `acceso` (daemon/API/RBAC), `auditoria` (logging/audit) y `hardening` (config del
+#     runtime/host) por las MISMAS reglas + `default_family` — NO requieren familias nuevas. Tras
+#     sumar un benchmark de contenedor, revisar "asignados por default (REVISAR)" en gaps.md.
+#   - CLOUD POSTURE (AWS/Azure/GCP/OCI) e IDENTIDAD CLOUD (Entra ID): son OTRO motor de Qualys
+#     (TotalCloud/CloudView, CSPM), NO controles de la libreria PC -> NO se clasifican con estas
+#     familias ni entran en este policy.xml. Estan en cis_catalog.yaml `additional_domains`
+#     (pc_importable: false) para la matriz de cobertura; su pack es un flujo aparte (cloud).
+families:
+  - id: "acceso"
+    number: 1
+    heading: "1. Control de Acceso y Autenticacion"
+    law_refs:
+      - "Art. 14 quinquies b) — confidencialidad de los sistemas de tratamiento"
+      - "Art. 14 bis — deber de secreto o confidencialidad"
+      - "Art. 3 h) — principio de confidencialidad"
+    match:
+      categories: ["Access Control Requirements"]
+      sub_categories: ["DB Access Controls"]
+
+  - id: "cifrado"
+    number: 2
+    heading: "2. Cifrado (en reposo y en transito)"
+    law_refs:
+      - "Art. 14 quinquies a) — seudonimizacion y cifrado de datos personales"
+    match:
+      categories: ["Encryption"]
+      sub_categories: ["DB Encryption"]
+
+  - id: "auditoria"
+    number: 3
+    heading: "3. Registro, Auditoria y Trazabilidad"
+    law_refs:
+      - "Art. 14 quinquies d) — verificacion y evaluacion regulares de las medidas"
+      - "Art. 14 quinquies (inc. final) — acreditar existencia y funcionamiento de las medidas"
+      - "Art. 14 sexies — deber de reportar vulneraciones (sustrato de deteccion/registro)"
+    match:
+      categories: ["Integrity and Availability"]
+      sub_categories: ["DB Auditing/Logging"]
+
+  - id: "hardening"
+    number: 4
+    heading: "4. Configuracion Segura y Endurecimiento"
+    law_refs:
+      - "Art. 3 f) — principio de seguridad (proteger contra tratamiento no autorizado, perdida, filtracion, destruccion)"
+      - "Art. 14 quater — proteccion desde el diseno y por defecto"
+    match:
+      # Los subs DB no mapeados a un pilar (incl. futuros de MySQL/MariaDB/MongoDB/Db2) NO se
+      # listan aca: caen en `hardening` via `classification.default_family` (ver arriba). Como la
+      # clasificacion es SUB-first, los subs DB de seguridad (DB Access Controls/DB Encryption/
+      # DB Auditing/DB Backup) siguen ruteando a su pilar correcto. Los subs DB de hardening de
+      # abajo quedan explicitos (defensivos: rutean aunque se cambie/quite el default_family).
+      categories: ["OS Security Settings", "[Entire] Network Setting", "Anti-Virus/Malware",
+                   "Services", "Web Application Services"]
+      sub_categories: ["DB Specific Settings", "DB OS-dependent Controls", "DB Utilities and Tools",
+                       "DBA Networking", "DB Installation/Patch Requirements"]
+
+  - id: "disponibilidad"
+    number: 5
+    heading: "5. Disponibilidad y Recuperacion"
+    law_refs:
+      - "Art. 14 quinquies c) — capacidad de restaurar la disponibilidad y el acceso a los datos personales tras un incidente fisico o tecnico (backup/recuperacion)"
+    match:
+      # LIMITE de taxonomia: la plataforma no tiene un eje "disponibilidad" propio. Solo el sub DB
+      # "DB Backup and Recovery" mapea limpio aca. El backup/DR a nivel OS suele caer bajo la CATEGORY
+      # "Integrity and Availability" (-> familia auditoria) o "OS Security Settings" (-> hardening); por
+      # eso esta familia es ESTRUCTURALMENTE delgada (cobertura parcial del Art. 14 quinquies c -> gaps.md).
+      categories: []
+      sub_categories: ["DB Backup and Recovery"]
+
+# Obligaciones de la ley NO auditables por Qualys PC (van a gaps.md, para honestidad
+# ante la Agencia / el cliente). No se "rellenan" con controles que no corresponden.
+gaps:
+  technical_partial:
+    - ref: "Art. 14 quinquies c)"
+      text: "Capacidad de restaurar la disponibilidad y el acceso a los datos tras un incidente (backup/DR). Cobertura PARCIAL: la familia 'Disponibilidad y Recuperacion' aporta controles de configuracion de backup a nivel de DB (DB Backup and Recovery), pero NO valida la existencia/restore real de backups, el DR de infraestructura ni los RTO/RPO -> complementar con proceso/otra herramienta."
+    - ref: "Art. 14 quinquies a) (seudonimizacion)"
+      text: "La seudonimizacion suele implementarse a nivel de aplicacion/datos, no de configuracion del host -> no auditable por PC."
+  organizational:
+    - "Art. 14 sexies — el PROCESO de notificacion de brechas a la Agencia y a los titulares (PC solo aporta el sustrato de deteccion)."
+    - "Derechos del titular (acceso, rectificacion, supresion, oposicion, portabilidad) — Titulo I."
+    - "Bases de licitud y consentimiento del tratamiento."
+    - "Registro de actividades de tratamiento; encargado de prevencion / responsable; transferencias internacionales."
+    - "Deber de informacion y transparencia (Art. 14 ter) salvo la publicacion de la propia politica de seguridad."
+    - "Evaluacion de impacto y diferenciacion de estandares por tamano/tipo de dato (Art. 14 septies) — decision de negocio."

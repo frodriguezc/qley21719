@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""tenant_coverage_pack.py — arma un Compliance Pack de la Ley 21.719 a MEDIDA de un tenant.
+
+Qué hace (todo **READ-ONLY** sobre el tenant; usa qualys_client, que bloquea estructuralmente
+cualquier escritura):
+  1. Barre el inventario (FO asset/host) -> consolida el **SO de la flota**.
+  2. Best-effort: intenta inferir **DB/middleware** del software del inventario (CSAM); lo no
+     detectable queda como "verificar manualmente".
+  3. Lista las **policies ya importadas** (FO compliance/policy list) y las cruza con un catálogo
+     curado (mapping/cis_catalog.yaml) -> qué benchmarks CIS YA están vs cuáles FALTAN.
+  4. Genera el **policy.xml** de la ley cosechando los benchmarks CIS YA importados que aplican.
+  5. Emite **faltantes.txt** (benchmarks a importar desde la librería para cobertura completa) y
+     **subir.sh** (el comando de import, listo para que lo corra el CLIENTE — human-gate).
+
+El **import NO lo hace este script** (read-only): "Import from Library" y "action=import" son
+mutaciones que ejecuta el cliente. Ver subir.sh / faltantes.txt.
+
+Uso:
+  QUALYS_POD=US03 QUALYS_API_USER=... QUALYS_API_PASSWORD=... \
+    .venv/bin/python scripts/tenant_coverage_pack.py --name "Ley 21.719 - <cliente>"
+  # o con credenciales explícitas:
+  ... --pod US03 --user U --password P
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import xml.etree.ElementTree as ET
+from collections import Counter, OrderedDict
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from qualys_client import QualysClient, from_env  # noqa: E402
+from compliance_pack import generate_pack  # noqa: E402
+
+
+# --------------------------------------------------------------------------- #
+# Lectura del tenant (READ-ONLY)
+# --------------------------------------------------------------------------- #
+def _fleet_os(client: QualysClient, max_hosts: int, page: int = 1000) -> tuple[Counter, int, int]:
+    """Pagina FO asset/host (action=list) y devuelve (Counter de OS, total_hosts, sin_os)."""
+    os_counts: Counter = Counter()
+    total = no_os = 0
+    params = {"action": "list", "details": "All", "truncation_limit": str(min(page, max_hosts))}
+    while total < max_hosts:
+        http, text = client.fo_get("/api/5.0/fo/asset/host/", params)
+        if http != 200:
+            raise RuntimeError(f"asset/host list -> HTTP {http}")
+        root = ET.fromstring(text)
+        for h in root.findall(".//HOST"):
+            total += 1
+            os_txt = (h.findtext("OS") or "").strip()
+            if os_txt:
+                os_counts[os_txt] += 1
+            else:
+                no_os += 1
+        print(f"      … {total} hosts barridos", flush=True)
+        warn = root.find(".//WARNING/URL")
+        if warn is None or not (warn.text or "").strip():
+            break
+        qs = parse_qs(urlparse(warn.text.strip()).query)
+        id_min = (qs.get("id_min") or [None])[0]
+        if not id_min:
+            break
+        params["id_min"] = id_min
+    return os_counts, total, no_os
+
+
+def _fleet_software(client: QualysClient, max_hosts: int, page: int = 500) -> set[str]:
+    """Best-effort: nombres de software del inventario CSAM (QPS /search/am/hostasset). Si el tenant
+    no tiene CSAM o el campo no viene, devuelve set() (-> db/middleware caen en 'verificar')."""
+    found: set[str] = set()
+    try:
+        http, text = client.qps_search("/qps/rest/2.0/search/am/hostasset", limit=min(max_hosts, page))
+        if http != 200:
+            return found
+        root = ET.fromstring(text)
+        # CSAM expone software bajo .../softwareList/HostAssetSoftware/name (varía por versión);
+        # juntamos cualquier <name>/<fullName> que cuelgue de un nodo *software*.
+        for el in root.iter():
+            tag = el.tag.lower()
+            if "software" in tag:
+                for child in el.iter():
+                    if child.tag.lower() in ("name", "fullname") and (child.text or "").strip():
+                        found.add(child.text.strip().lower())
+    except Exception:
+        return found
+    return found
+
+
+def _imported_policies(client: QualysClient) -> list[tuple[str, str]]:
+    """Devuelve [(policy_id, title)] de las policies del tenant (FO compliance/policy list)."""
+    http, text = client.fo_get("/api/4.0/fo/compliance/policy/", {"action": "list"})
+    if http != 200:
+        raise RuntimeError(f"compliance/policy list -> HTTP {http}")
+    root = ET.fromstring(text)
+    out = []
+    for p in root.findall(".//POLICY"):
+        pid = (p.findtext("ID") or "").strip()
+        title = (p.findtext("TITLE") or "").strip()
+        if pid:
+            out.append((pid, title))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Reconciliación flota <-> catálogo <-> policies importadas
+# --------------------------------------------------------------------------- #
+def _any(patterns, text) -> bool:
+    return any(re.search(p, text, re.I) for p in (patterns or []))
+
+
+def reconcile(catalog: dict, os_counts: Counter, software: set[str],
+              policies: list[tuple[str, str]]) -> dict:
+    """Cruza el catálogo curado con la flota (os/software) y las policies importadas (title)."""
+    targets = catalog["targets"]
+    titles = [t for _, t in policies]
+
+    rows = []
+    for tg in targets:
+        # ¿presente en la flota?
+        fleet_hosts = sum(n for osx, n in os_counts.items() if _any(tg.get("os_match"), osx))
+        # match de software por nombre individual (no contra un blob unido -> evita cruces falsos)
+        sw_hit = any(_any(tg.get("software_match"), s) for s in software)
+        present_in_fleet = fleet_hosts > 0 or sw_hit
+        # ¿ya importado? (match de title contra las policies del tenant)
+        imported_ids = [pid for pid, ti in policies if _any(tg.get("title_match"), ti)]
+        rows.append({
+            "key": tg["key"], "group": tg["group"], "kind": tg["kind"],
+            "benchmark": tg["benchmark"], "pillars": tg.get("pillars", []),
+            "fleet_hosts": fleet_hosts, "sw_hit": sw_hit,
+            "present_in_fleet": present_in_fleet,
+            "imported_ids": imported_ids, "imported": bool(imported_ids),
+        })
+    return {"rows": rows}
+
+
+# --------------------------------------------------------------------------- #
+# Emisión de faltantes.txt + subir.sh
+# --------------------------------------------------------------------------- #
+def _write_faltantes(path: Path, catalog: dict, rec: dict, os_counts: Counter, total_hosts: int,
+                     no_os: int, software_seen: bool, present_sources: list[dict],
+                     pod: str, name: str, now: str) -> None:
+    L = []
+    L += [f"COBERTURA TÉCNICA — Ley 21.719 — POD {pod} — {now}",
+          f"Policy: {name}", "=" * 72, ""]
+    L += [f"Flota: {total_hosts} hosts barridos ({no_os} sin SO detectado / sin auth scan).", ""]
+    L += ["SO detectado en la flota (top):"]
+    for osx, n in os_counts.most_common(40):
+        L.append(f"  {n:4d}  {osx}")
+    if not os_counts:
+        L.append("  (ninguno — la flota no tiene SO resuelto; correr auth scans)")
+    L += ["", "-" * 72, "Benchmarks CIS YA importados que aplican (fuentes del policy.xml):"]
+    if present_sources:
+        for s in present_sources:
+            L.append(f"  [{s['id']}] {s['title']}")
+    else:
+        L.append("  (ninguno — el policy.xml no se generó: importá al menos un benchmark CIS)")
+
+    detected_missing = [r for r in rec["rows"]
+                        if r["present_in_fleet"] and not r["imported"] and r["kind"] == "os"]
+    # non-OS (db/middleware/container/infra) no importados: si se detectó por software -> "detectado";
+    # si no -> "verificar manualmente" (Qualys no siempre fingerprintea el motor sin CSAM/auth scan).
+    verify = [r for r in rec["rows"] if not r["imported"] and r["kind"] != "os"]
+    detected_sw = [r for r in verify if r["sw_hit"]]
+    verify_only = [r for r in verify if not r["sw_hit"]]
+
+    L += ["", "=" * 72,
+          "FALTAN IMPORTAR (Import from Library, human-gate) para cobertura completa:", ""]
+    L += ["[A] Detectados en la flota por SO, sin benchmark importado:"]
+    if detected_missing:
+        for r in sorted(detected_missing, key=lambda x: -x["fleet_hosts"]):
+            L.append(f"  - {r['benchmark']}   ({r['fleet_hosts']} hosts · {r['group']})")
+    else:
+        L.append("  (ninguno — el SO de la flota ya está cubierto por benchmarks importados)")
+
+    L += ["", "[B] Detectados por software (best-effort), sin benchmark importado:"]
+    if detected_sw:
+        for r in detected_sw:
+            L.append(f"  - {r['benchmark']}   ({r['group']})")
+    else:
+        L.append("  (ninguno detectado automáticamente)")
+
+    L += ["", "[C] DB / middleware / infra — VERIFICAR manualmente si corren en la flota:",
+          "    (Qualys no siempre fingerprintea el motor sin CSAM/auth scan -> confirmar con el DBA/infra)"]
+    for r in verify_only:
+        L.append(f"  - {r['benchmark']}   ({r['group']})")
+
+    L += ["", "-" * 72, "Fuera del alcance de Policy Compliance (van por OTRO motor de Qualys):"]
+    other = [o for o in catalog.get("additional_domains", []) if not o.get("pc_importable")]
+    for o in other:
+        L.append(f"  - {o.get('group', o.get('key'))}: {o.get('benchmark', '')}  ({o.get('qualys_app', '')})")
+    if not other:
+        L.append("  (ninguno)")
+    L += ["", "Cómo importar un benchmark: PA > Policies > New > Policy > Import from Library > <nombre>.",
+          "Tras importar: re-correr este script para sumarlo al policy.xml, o regenerar el pack.", ""]
+    path.write_text("\n".join(L) + "\n", encoding="utf-8")
+
+
+def _write_subir_sh(path: Path, server: str, levels: dict, name: str) -> None:
+    base = server.rstrip("/")
+    lines = ["#!/usr/bin/env bash",
+             "# Import de la policy generada (lo corre el CLIENTE — human-gate).",
+             "# READ-ONLY de la herramienta: este paso NO lo ejecuta el generador.",
+             "# Requiere QUALYS_API_USER / QUALYS_API_PASSWORD en el entorno.",
+             "set -euo pipefail", ""]
+    for lid, lv in levels.items():
+        xml = Path(lv["out_dir"]) / "policy.xml"
+        title = f"{name} ({lid})"
+        lines += [f'# --- nivel {lid} ({lv.get("included","?")} controles) ---',
+                  'curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
+                  '     -H "X-Requested-With: tenant-coverage-pack" \\',
+                  '     -H "Content-Type: text/xml" \\',
+                  f'     --data-binary @"{xml}" \\',
+                  f'     "{base}/api/4.0/fo/compliance/policy/?action=import'
+                  f'&title={_q(title)}&create_user_controls=0"', ""]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _q(s: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(s)
+
+
+# --------------------------------------------------------------------------- #
+# Orquestador
+# --------------------------------------------------------------------------- #
+def run(args) -> int:
+    if args.pod and args.user and args.password:
+        client = QualysClient(args.pod, args.user, args.password)
+    else:
+        client = from_env()
+
+    catalog = yaml.safe_load((ROOT / args.catalog).read_text())
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    print(f"[1/5] Barriendo inventario (POD {client.pod}, máx {args.max_hosts} hosts)…")
+    os_counts, total, no_os = _fleet_os(client, args.max_hosts)
+    print(f"      {total} hosts · {len(os_counts)} variantes de SO · {no_os} sin SO")
+
+    print("[2/5] Inferencia best-effort de software (CSAM)…")
+    software = _fleet_software(client, args.max_hosts)
+    print(f"      {len(software)} nombres de software ({'CSAM disponible' if software else 'sin software -> DB/middleware a verificar'})")
+
+    print("[3/5] Listando policies importadas…")
+    policies = _imported_policies(client)
+    print(f"      {len(policies)} policies en el tenant")
+
+    rec = reconcile(catalog, os_counts, software, policies)
+
+    # fuentes = policies importadas que matchean un benchmark del catálogo (CIS) -> a cosechar
+    src_ids, present_sources, seen = [], [], set()
+    title_by_id = {pid: ti for pid, ti in policies}
+    for r in rec["rows"]:
+        for pid in r["imported_ids"]:
+            if pid not in seen:
+                seen.add(pid)
+                src_ids.append(pid)
+                present_sources.append({"id": pid, "title": title_by_id.get(pid, "")})
+
+    now = _now()
+    result = None
+    if src_ids:
+        print(f"[4/5] Generando policy.xml desde {len(src_ids)} benchmarks importados…")
+        # spec relativo a ROOT (viaja con la herramienta), igual que el catálogo -> CWD-independiente.
+        spec_path = args.spec if Path(args.spec).is_absolute() else str(ROOT / args.spec)
+        result = generate_pack(spec_path, str(out), client=client, source_ids=src_ids,
+                               level=args.level or None, refresh=args.refresh, ui_safe=True)
+        print(f"      harvested={result['harvested']} classified={result['classified']} "
+              f"unclassified={result['unclassified']} ok={result['ok']}")
+    else:
+        print("[4/5] Sin benchmarks CIS importados -> se omite el policy.xml (solo faltantes).")
+
+    print("[5/5] Emitiendo faltantes.txt + subir.sh…")
+    _write_faltantes(out / "faltantes.txt", catalog, rec, os_counts, total, no_os,
+                     bool(software), present_sources, client.pod, args.name, now)
+    if result:
+        _write_subir_sh(out / "subir.sh", client.server, result["levels"], args.name)
+
+    print(f"\nSalida: {out}/")
+    print(f"  - faltantes.txt   (qué importar para cobertura completa)")
+    if result:
+        for lid, lv in result["levels"].items():
+            print(f"  - {lid}/policy.xml ({lv['included']} controles)")
+        print(f"  - subir.sh        (import — lo corre el CLIENTE, human-gate)")
+    return 0
+
+
+def _now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Compliance Pack a medida de un tenant (read-only).")
+    ap.add_argument("--name", default="Ley 21.719 - Medidas de Seguridad", help="Título de la policy.")
+    ap.add_argument("--spec", default="mapping/ley21719.yaml", help="Spec YAML de la ley.")
+    ap.add_argument("--catalog", default="mapping/cis_catalog.yaml", help="Catálogo tecnología->benchmark.")
+    ap.add_argument("--out", default="artifacts/tenant-pack", help="Directorio de salida.")
+    ap.add_argument("--level", default="", help="Nivel (base|sensible). Vacío = ambos.")
+    ap.add_argument("--max-hosts", type=int, default=5000, help="Tope de hosts a barrer.")
+    ap.add_argument("--refresh", action="store_true", help="Forzar re-cosecha live del harvest.")
+    ap.add_argument("--pod", default="", help="POD (si no, env/.env).")
+    ap.add_argument("--user", default="", help="API user (si no, env/.env).")
+    ap.add_argument("--password", default="", help="API password (si no, env/.env).")
+    args = ap.parse_args()
+    return run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

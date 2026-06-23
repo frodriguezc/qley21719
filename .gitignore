@@ -1,0 +1,37 @@
+# Credenciales — NUNCA commitear (.env.example SÍ se versiona, es la plantilla)
+.env
+.env.*
+!.env.example
+config.yaml
+config.yml
+
+# Salida generada: policy.xml lleva valores CIS endurecidos (contenido licenciado);
+# el cache del harvest también. Mantenerlos FUERA de git. `deliverables/` es el pack
+# final cara-al-cliente (policy.xml + datos del tenant) -> tampoco se commitea.
+artifacts/
+deliverables/
+cache/
+*.policy.xml
+faltantes.txt
+subir.sh
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Notas internas de traspaso / diseño (no se publican)
+HANDOVER.md
+DESIGN-cloud-posture.md
+LEY21719-PLATFORM-COVERAGE.md
+
+# OS / editores / herramientas locales
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+.claude/

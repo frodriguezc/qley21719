@@ -1,0 +1,389 @@
+# =============================================================================
+# Catálogo curado: tecnología -> benchmark CIS de librería Qualys (+ patrones de match)
+# -----------------------------------------------------------------------------
+# Lo consume scripts/tenant_coverage_pack.py. Es el PUENTE que la API NO da: el
+# catálogo "Import from Library" no es API-enumerable, así que el mapeo
+# tecnología -> benchmark recomendado vive curado acá (sembrado de la matriz de
+# cobertura de la Ley 21.719 + el doc de librería Qualys, mayo 2026).
+#
+# Cada entrada (`target`):
+#   key:           id interno único
+#   group:         agrupador para el reporte
+#   kind:          os | db | middleware | container | virtualization | network
+#                  (os = detectable por el SO del host; el resto = best-effort -> "verificar")
+#   benchmark:     nombre del benchmark CIS a importar (Import from Library)
+#   pillars:       familias de la ley a las que aporta (informativo)
+#   os_match:      regex (case-insensitive) contra el <OS> del host  -> presencia en la flota
+#   software_match:regex contra software/servicios detectados (best-effort; db/middleware/...)
+#   title_match:   regex contra el TITLE de las policies importadas  -> "ya está en el tenant"
+#
+# Notas:
+#  - os_match define "lo que la flota NECESITA"; title_match define "lo que el tenant YA tiene".
+#  - FALTANTE = target presente en la flota (os/software) cuyo benchmark NO está importado.
+#  - kind != os y sin software_match positivo -> se reporta como "verificar manualmente".
+#  - Las versiones CIS reales pueden ir por detrás del SO (p.ej. macOS) -> match exacto de tech.
+# =============================================================================
+
+targets:
+  # ---------------- Endpoints Windows ----------------
+  - key: win10
+    group: "Endpoints · Windows"
+    kind: os
+    benchmark: "CIS Microsoft Windows 10 Enterprise Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['windows\s*10\b', 'windows.*\b10 (enterprise|pro)']
+    title_match: ['windows 10']
+  - key: win11
+    group: "Endpoints · Windows"
+    kind: os
+    benchmark: "CIS Microsoft Windows 11 Enterprise Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['windows\s*11\b']
+    title_match: ['windows 11']
+
+  # ---------------- Endpoints macOS ----------------
+  - key: macos
+    group: "Endpoints · macOS"
+    kind: os
+    benchmark: "CIS Apple macOS Benchmark (versión = la de la flota; OJO: la librería suele rezagar)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['mac\s*os', 'macos', 'os x', 'darwin']
+    title_match: ['macos', 'mac os', 'os x']
+
+  # ---------------- Server OS · Windows ----------------
+  - key: win_server_2016
+    group: "Server OS · Windows"
+    kind: os
+    benchmark: "CIS Microsoft Windows Server 2016 Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['windows.*server.*2016', 'windows.*2016.*server']
+    title_match: ['windows server 2016']
+  - key: win_server_2019
+    group: "Server OS · Windows"
+    kind: os
+    benchmark: "CIS Microsoft Windows Server 2019 Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['windows.*server.*2019', 'windows.*2019.*server']
+    title_match: ['windows server 2019']
+  - key: win_server_2022
+    group: "Server OS · Windows"
+    kind: os
+    benchmark: "CIS Microsoft Windows Server 2022 Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['windows.*server.*2022', 'windows.*2022.*server']
+    title_match: ['windows server 2022']
+  - key: win_server_2025
+    group: "Server OS · Windows"
+    kind: os
+    benchmark: "CIS Microsoft Windows Server 2025 Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['windows.*server.*2025', 'windows.*2025.*server']
+    title_match: ['windows server 2025']
+
+  # ---------------- Server OS · Linux (familia RHEL) ----------------
+  - key: rhel
+    group: "Server OS · Linux (RHEL family)"
+    kind: os
+    benchmark: "CIS Red Hat Enterprise Linux Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['red\s*hat enterprise linux', '\brhel\b']
+    title_match: ['red hat enterprise linux']
+  - key: oracle_linux
+    group: "Server OS · Linux (RHEL family)"
+    kind: os
+    benchmark: "CIS Oracle Linux Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['oracle (enterprise )?linux']
+    title_match: ['oracle linux', 'oracle enterprise linux']
+  - key: centos
+    group: "Server OS · Linux (RHEL family)"
+    kind: os
+    benchmark: "CIS CentOS Linux Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['centos']
+    title_match: ['centos']
+  - key: rocky
+    group: "Server OS · Linux (RHEL family)"
+    kind: os
+    benchmark: "CIS Rocky Linux Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['rocky linux']
+    title_match: ['rocky linux']
+  - key: alma
+    group: "Server OS · Linux (RHEL family)"
+    kind: os
+    benchmark: "CIS AlmaLinux OS Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['alma\s*linux']
+    title_match: ['alma linux', 'almalinux']
+
+  # ---------------- Server OS · Linux (Debian family) ----------------
+  - key: ubuntu
+    group: "Server OS · Linux (Debian family)"
+    kind: os
+    benchmark: "CIS Ubuntu Linux LTS Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['ubuntu']
+    title_match: ['ubuntu']
+  - key: debian
+    group: "Server OS · Linux (Debian family)"
+    kind: os
+    benchmark: "CIS Debian Linux Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['debian']
+    title_match: ['debian']
+
+  # ---------------- Server OS · Linux (SUSE) + Amazon ----------------
+  - key: suse
+    group: "Server OS · Linux (SUSE)"
+    kind: os
+    benchmark: "CIS SUSE Linux Enterprise Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['suse linux enterprise', '\bsles\b']
+    title_match: ['suse linux enterprise']
+  - key: amazon_linux
+    group: "Server OS · Linux (Amazon)"
+    kind: os
+    benchmark: "CIS Amazon Linux Benchmark (2 / 2023, según la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['amazon linux']
+    title_match: ['amazon linux']
+
+  # ---------------- Server OS · Unix ----------------
+  - key: aix
+    group: "Server OS · Unix"
+    kind: os
+    benchmark: "CIS IBM AIX Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['\baix\b']
+    title_match: ['aix']
+  - key: solaris
+    group: "Server OS · Unix"
+    kind: os
+    benchmark: "CIS Oracle Solaris Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['solaris', 'sunos']
+    title_match: ['solaris']
+
+  # ---------------- Bases de datos (best-effort -> verificar) ----------------
+  - key: mssql
+    group: "Bases de datos"
+    kind: db
+    benchmark: "CIS Microsoft SQL Server Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    software_match: ['sql server', 'mssql']
+    title_match: ['sql server']
+  - key: oracle_db
+    group: "Bases de datos"
+    kind: db
+    benchmark: "CIS Oracle Database Benchmark (19c/RDBMS + On Host OS)"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    software_match: ['oracle database', 'oracle.*\d+c\b']
+    title_match: ['oracle database']
+  - key: postgres
+    group: "Bases de datos"
+    kind: db
+    benchmark: "CIS PostgreSQL Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    software_match: ['postgre']
+    title_match: ['postgresql']
+  - key: mysql
+    group: "Bases de datos"
+    kind: db
+    benchmark: "CIS Oracle MySQL Community/Enterprise Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    software_match: ['mysql']
+    title_match: ['mysql']
+  - key: mariadb
+    group: "Bases de datos"
+    kind: db
+    benchmark: "CIS MariaDB Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    software_match: ['mariadb']
+    title_match: ['mariadb']
+  - key: mongodb
+    group: "Bases de datos"
+    kind: db
+    benchmark: "CIS MongoDB Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    software_match: ['mongo']
+    title_match: ['mongodb']
+  - key: db2
+    group: "Bases de datos"
+    kind: db
+    benchmark: "CIS IBM Db2 Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    software_match: ['db2']
+    title_match: ['db2']
+
+  # ---------------- Web / app servers y middleware ----------------
+  - key: iis
+    group: "Web / middleware"
+    kind: middleware
+    benchmark: "CIS Microsoft IIS Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    software_match: ['\biis\b', 'internet information services']
+    title_match: ['microsoft iis', '\biis\b']
+  - key: apache_http
+    group: "Web / middleware"
+    kind: middleware
+    benchmark: "CIS Apache HTTP Server Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    software_match: ['apache.*http', 'httpd']
+    title_match: ['apache http']
+  - key: nginx
+    group: "Web / middleware"
+    kind: middleware
+    benchmark: "CIS NGINX Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    software_match: ['nginx']
+    title_match: ['nginx']
+  - key: tomcat
+    group: "Web / middleware"
+    kind: middleware
+    benchmark: "CIS Apache Tomcat Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    software_match: ['tomcat']
+    title_match: ['tomcat']
+  - key: websphere
+    group: "Web / middleware"
+    kind: middleware
+    benchmark: "CIS IBM WebSphere Benchmark (Traditional / Liberty)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    software_match: ['websphere']
+    title_match: ['websphere']
+
+  # ---------------- Contenedores / orquestación ----------------
+  - key: docker
+    group: "Contenedores"
+    kind: container
+    benchmark: "CIS Docker Benchmark"
+    pillars: [acceso, auditoria, hardening]
+    software_match: ['docker']
+    title_match: ['docker']
+  - key: kubernetes
+    group: "Contenedores"
+    kind: container
+    benchmark: "CIS Kubernetes Benchmark"
+    pillars: [acceso, auditoria, hardening]
+    software_match: ['kubernetes', 'kubelet', '\bk8s\b']
+    title_match: ['kubernetes']
+
+  # ---------------- Virtualización ----------------
+  - key: esxi
+    group: "Virtualización"
+    kind: virtualization
+    benchmark: "CIS VMware ESXi Benchmark (versión = la de la flota)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['esxi', 'vmware esx']
+    software_match: ['esxi', 'vmware esx']
+    title_match: ['esxi', 'vmware']
+
+  # ---------------- Red / seguridad ----------------
+  - key: cisco_ios
+    group: "Red / seguridad"
+    kind: network
+    benchmark: "CIS Cisco IOS Benchmark (o DISA Cisco IOS STIG)"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['cisco ios', 'cisco.*ios']
+    software_match: ['cisco ios']
+    title_match: ['cisco ios']
+  - key: palo_alto
+    group: "Red / seguridad"
+    kind: network
+    benchmark: "CIS Palo Alto Firewall Benchmark"
+    pillars: [acceso, cifrado, auditoria, hardening]
+    os_match: ['pan-os', 'palo alto']
+    software_match: ['pan-os', 'palo alto']
+    title_match: ['palo alto']
+
+# =============================================================================
+# Dominios adicionales (más allá de los `targets` PC autodetectados por la flota):
+# cobertura de CLOUD POSTURE e IDENTIDAD, para tener la matriz COMPLETA de la ley.
+# -----------------------------------------------------------------------------
+# OJO: la mayoría NO son benchmarks de la librería de Policy Compliance ni entran en
+# el `policy.xml` de PC — se evalúan con OTRO motor de Qualys (TotalCloud / CloudView,
+# CSPM). Por eso viven acá y NO en `targets` (que los meterían en el harvest PC y
+# romperían). Cada entrada declara su `control_system` y `pc_importable`.
+#   - tenant_coverage_pack.py NO los cosecha en el `policy.xml` (solo cosecha `targets`); sí los
+#     lista informativamente en `faltantes.txt` bajo "Fuera del alcance de Policy Compliance".
+#   - build_coverage_matrix.py los incluye en la matriz de cobertura (CSV).
+# Campos: key · group · kind (cloud|identity) · qualys_app · control_system
+#   (cloud-posture|pc-library) · pc_importable (true|false) · benchmark · cis_version
+#   (última conocida) · pillars (familias de la ley) · status (active|planned) · notes.
+# AMPLIAR cobertura cloud/identidad/SaaS = sumar entradas acá + re-correr el builder.
+# Excepción: Active Directory SÍ es PC (no tiene benchmark standalone; sus controles de
+#   Domain Controller viven en el CIS Windows Server, ya cubierto por los `win_server_*`).
+#
+# `cis_version`: última versión publicada por CIS conocida al 2026-06 (verificada contra
+#   cisecurity.org). CIS itera ~anual → VERIFICAR la versión vigente en CIS WorkBench y la
+#   que soporte el motor (TotalCloud/CSPM) al momento de desplegar; el número de abajo es
+#   referencia, no contrato.
+# =============================================================================
+additional_domains:
+  - key: cloud_aws
+    group: "Cloud · AWS"
+    kind: cloud
+    qualys_app: "TotalCloud / CloudView (CSPM)"
+    control_system: cloud-posture
+    pc_importable: false
+    benchmark: "CIS Amazon Web Services Foundations Benchmark"
+    cis_version: "v5.0.0 (base ampliamente adoptada; v7.0.0 = última publicada 2026)"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    status: planned
+    notes: "Cloud posture (CSPM): IAM/MFA (acceso), KMS/cifrado en reposo+tránsito (cifrado), CloudTrail/Config (auditoria), endurecimiento de servicios (hardening), backups/multi-AZ (disponibilidad). NO es librería PC."
+  - key: cloud_azure
+    group: "Cloud · Azure"
+    kind: cloud
+    qualys_app: "TotalCloud / CloudView (CSPM)"
+    control_system: cloud-posture
+    pc_importable: false
+    benchmark: "CIS Microsoft Azure Foundations Benchmark"
+    cis_version: "v6.0.0 (2026)"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    status: planned
+    notes: "Cloud posture (CSPM). RBAC/PIM, Key Vault, Monitor/Activity Log, Defender. NO es librería PC."
+  - key: cloud_gcp
+    group: "Cloud · GCP"
+    kind: cloud
+    qualys_app: "TotalCloud / CloudView (CSPM)"
+    control_system: cloud-posture
+    pc_importable: false
+    benchmark: "CIS Google Cloud Platform Foundation Benchmark"
+    cis_version: "v5.0.0 (2026-05; v4.0.0 = 2025)"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    status: planned
+    notes: "Cloud posture (CSPM). IAM, Cloud KMS, Cloud Audit Logs. NO es librería PC."
+  - key: cloud_oci
+    group: "Cloud · OCI"
+    kind: cloud
+    qualys_app: "TotalCloud / CloudView (CSPM)"
+    control_system: cloud-posture
+    pc_importable: false
+    benchmark: "CIS Oracle Cloud Infrastructure Foundations Benchmark"
+    cis_version: "v3.1.0 (2026-03; v3.0.0 = 2025-02)"
+    pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
+    status: planned
+    notes: "Cloud posture (CSPM). NO es librería PC."
+  - key: identity_entra
+    group: "Identidad · Entra ID / M365"
+    kind: identity
+    qualys_app: "TotalCloud / CloudView (CSPM)"
+    control_system: cloud-posture
+    pc_importable: false
+    benchmark: "CIS Microsoft 365 Foundations Benchmark (incl. sección Entra ID / Azure AD)"
+    cis_version: "v7.0.0 (2026-06; sección 5 = Entra ID); v6.0.1 = 2026-02 (sigue como versión de automated assessment en CIS-CAT Pro)"
+    pillars: [acceso, auditoria, hardening]
+    status: planned
+    notes: "Identidad cloud: MFA, acceso condicional, roles privilegiados, sign-in logs. Cloud posture (CSPM), NO PC."
+  - key: identity_ad
+    group: "Identidad · Active Directory"
+    kind: identity
+    qualys_app: "Policy Compliance"
+    control_system: pc-library
+    pc_importable: true
+    benchmark: "CIS Microsoft Windows Server Benchmark (perfil Domain Controller)"
+    cis_version: "(la del CIS Windows Server de la flota; resuelta por win_server_*)"
+    pillars: [acceso, auditoria, hardening]
+    status: active
+    notes: "AD no tiene benchmark standalone: los controles de Domain Controller viven en el CIS Windows Server (perfil DC), YA cubierto por los targets win_server_*. SÍ PC-importable; acá solo para visibilidad en la matriz."

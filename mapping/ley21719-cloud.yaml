@@ -1,0 +1,155 @@
+# =============================================================================
+# Mapping spec: Ley 21.719 (CL) -> áreas de control CLOUD POSTURE (CSPM).
+# -----------------------------------------------------------------------------
+# Scaffold del flujo cloud (motor SEPARADO del de Policy Compliance). Formaliza el
+# §5 de DESIGN-cloud-posture.md: cruza las 5 familias legales (las MISMAS que
+# mapping/ley21719.yaml, para continuidad de trazabilidad) contra el ÁREA de control
+# cloud y ejemplos de checks CIS por proveedor.
+#
+# A diferencia del flujo PC, en cloud NO hay policy.xml importable: la unidad evaluada
+# es un RECURSO cloud (bucket/IAM/SG/VM) descubierto vía connector; los controles CSPM
+# son System/Custom, no UDCs. Por eso este YAML alimenta un pipeline DISTINTO
+# (harvest controls -> resolve posture -> classify -> emit mapping report), NO el
+# generador de policy.xml. Ver DESIGN-cloud-posture.md §3-§6.
+#
+# ESTADO / CONFIANZA (leer):
+#   - Familias y artículos: GROUNDED. Mismas 5 familias que ley21719.yaml; numeración
+#     de artículos verificada vs Sources/Ley-21719_13-DIC-2024.pdf (principios en Art. 3°).
+#   - Áreas de control cloud: GROUNDED a nivel de área (IAM/KMS/Audit/Hardening/Backup).
+#   - Ejemplos de checks CIS por proveedor: ASSUMPTION — plausibles para las CIS
+#     Foundations, NO citados a un control.name/CID del tenant. Las CIS Foundations
+#     ITERAN (AWS v1.x->v7.0.0, etc.) y los CIDs cambian entre versiones -> cualquier
+#     mapeo concreto queda atado a la versión del benchmark vigente y debe re-validarse.
+#   - El motor que consume esto (cliente read-only cloudview-api/rest/v1 + qps/rest/3.0,
+#     pipeline) está PENDIENTE de construir y CONDICIONADO a confirmar la API (Evaluations
+#     endpoint §7#1, rol read-only §7#8). Ver DESIGN-cloud-posture.md §7.
+#
+# ALCANCE HONESTO: el CSPM valida la CONFIGURACIÓN de cifrado/backup/replicación, NO el
+# cifrado per se, el restore real ni los RTO/RPO. Las familias `cifrado` y `disponibilidad`
+# son por eso "config-only" (gap honesto declarado, no capacidad de Qualys).
+# =============================================================================
+
+meta:
+  law: "Ley 21.719 (CL) — protección de datos personales"
+  engine: "cloud-posture (CSPM) — TotalCloud / CloudView"
+  transport: "REST JSON: cloudview-api/rest/v1 + qps/rest/3.0 (NO la XML API de PC)"
+  design_doc: "DESIGN-cloud-posture.md"
+  providers: [aws, azure, gcp, oci]
+  caveat_oci: "OCI: el KB de connectors lo cubre, pero la Postman enumera AWS/Azure/GCP. Si OCI no expone evaluations/connectors equivalentes, puede quedar fuera del pack (§7#5). NO asumir uniformidad multi-cloud."
+  ley_native_mandate: false   # Ley 21.719 NO está como mandate nativo CSPM (§7#6, al 2026-06). Se puentea vía mandate afín (ISO 27001 / NIST 800-53 / GDPR).
+
+# Las 5 familias legales (ids idénticos a mapping/ley21719.yaml). `config_only: true`
+# marca las familias donde el CSPM solo valida configuración, no el control real.
+# + 1 bucket NO-legal `no_aplica` (al final): exclusión explícita de controles que no son
+#   medida de seguridad de datos (performance/costo/housekeeping), sin artículo. Ver su comentario.
+families:
+  - id: acceso
+    number: 1
+    cloud_area: "IAM / identidad y acceso (MFA, roles, mínimo privilegio)"
+    law_articles:
+      - "Art. 14 quinquies b) — confidencialidad de los sistemas de tratamiento"
+      - "Art. 14 bis — deber de secreto o confidencialidad"
+      - "Art. 3° h) — principio de confidencialidad"
+    bridge_mandates: ["ISO/IEC 27001:2022", "NIST 800-53 Rev5", "CIS Controls v8"]
+    examples:   # ASSUMPTION — no citados a CID; re-validar contra la versión del benchmark
+      aws: ["MFA en root + usuarios IAM", "política de contraseñas", "sin access keys de root", "sin IAM policy *:*"]
+      azure: ["MFA por acceso condicional", "PIM para roles privilegiados"]
+      gcp: ["sin roles primitivos Owner/Editor", "2SV obligatorio"]
+      oci: ["MFA, políticas IAM mínimas (VERIFICAR cobertura OCI)"]
+    note: "Incl. identidad cloud (Entra ID) vía ETM Identity / CSPM. La pata humana del secreto es organizacional."
+  - id: cifrado
+    number: 2
+    config_only: true
+    cloud_area: "KMS / cifrado at-rest + in-transit"
+    law_articles:
+      - "Art. 14 quinquies a) — seudonimización y cifrado"
+    bridge_mandates: ["ISO/IEC 27001:2022", "PCI-DSS v4.0", "GDPR"]
+    examples:
+      aws: ["cifrado S3/EBS", "deny no-SSL", "rotación de CMK"]
+      azure: ["'Secure transfer required'", "Key Vault", "TLS >= 1.2"]
+      gcp: ["CMEK", "rotación de llaves", "SSL en Cloud SQL"]
+      oci: ["cifrado de block/object storage (VERIFICAR)"]
+    note: "CSPM detecta AUSENCIA/debilidad de cifrado en la config; NO cifra ni seudonimiza. Gap honesto."
+  - id: auditoria
+    number: 3
+    cloud_area: "Audit logs: CloudTrail / Activity Log+Monitor / Cloud Audit Logs"
+    law_articles:
+      - "Art. 14 quinquies d) — verificación regular de eficacia"
+      - "Art. 14 quinquies (inc. final) — acreditar funcionamiento de las medidas"
+      - "Art. 14 sexies — reporte de vulneraciones de seguridad"
+    bridge_mandates: ["NIST 800-53 Rev5", "ISO/IEC 27001:2022", "CIS Controls v8"]
+    examples:
+      aws: ["CloudTrail multi-región + validación + KMS", "AWS Config", "alarmas de cambios"]
+      azure: ["diagnostic settings", "Microsoft Defender for Cloud"]
+      gcp: ["Admin Activity + Data Access logs", "métricas de cambios IAM"]
+      oci: ["Audit service retención (VERIFICAR)"]
+    note: "El sustrato de detección/registro; el acto de reportar a la Agencia es organizacional."
+  - id: hardening
+    number: 4
+    default_family: true
+    cloud_area: "Config-hardening: red/exposición, postura de storage, baselines"
+    law_articles:
+      - "Art. 3° f) — principio de seguridad (proteger contra tratamiento no autorizado, pérdida, filtración, destrucción)"
+      - "Art. 14 quáter — protección desde el diseño y por defecto"
+    bridge_mandates: ["CIS Controls v8", "ISO/IEC 27001:2022", "NIST 800-53 Rev5"]
+    examples:
+      aws: ["sin SG 0.0.0.0/0 a 22/3389", "S3 Block Public Access", "RDS no público"]
+      azure: ["NSG sin RDP/SSH a Internet", "storage sin acceso anónimo"]
+      gcp: ["firewall sin ingreso a 22/3389", "buckets sin allUsers"]
+      oci: ["security lists sin 0.0.0.0/0 a puertos sensibles (VERIFICAR)"]
+    note: "Incl. baselines de contenedores. Catch-all: un control cloud sin familia explícita cae acá."
+  - id: disponibilidad
+    number: 5
+    config_only: true
+    cloud_area: "Backup / multi-AZ / DR"
+    law_articles:
+      - "Art. 14 quinquies c) — capacidad de restaurar la disponibilidad y el acceso tras incidente"
+    bridge_mandates: ["ISO/IEC 27001:2022", "NIST 800-53 Rev5"]
+    examples:
+      aws: ["versionado + MFA-delete S3", "backups RDS", "multi-AZ"]
+      azure: ["soft-delete + versionado de blob", "GRS"]
+      gcp: ["backups + HA regional Cloud SQL"]
+      oci: ["backups de DB/block volume (VERIFICAR)"]
+    note: "CSPM valida la CONFIGURACIÓN de backup/replicación; NO el restore real ni RTO/RPO. Gap honesto."
+  # Bucket NO-legal (no es una de las 5 familias). Controles CSPM que NO son una medida técnica de
+  # seguridad de datos (telemetría de performance/APM, optimización de costo, housekeeping de
+  # recursos) y por ende no trazan a ninguna obligación de la Ley 21.719. Se clasifican explícitamente
+  # acá (route=keyword) para sacarlos del catch-all `hardening` y del gaps.md, sin contaminar la
+  # evidencia de cumplimiento. NO lleva default_family ni config_only.
+  - id: no_aplica
+    number: 6
+    cloud_area: "(N/A) — control técnico sin obligación de seguridad de datos: performance / costo / housekeeping"
+    law_articles: []   # SIN artículo: es exclusión explícita, no una familia legal
+    examples:
+      aws: ["X-Ray tracing", "ECS Container Insights", "RDS Performance Insights", "EBS-optimized", "EIP sin asociar", "AMI sin usar", "Lambda multiple triggers"]
+    note: "Excluidos por análisis de mapeo (no son control de seguridad de datos); ver coverage_matrix / mapping report."
+
+# Clasificación CSPM control -> familia legal: por KEYWORDS sobre control.name (+ benchmarkType),
+# que es la materia prima cloud (ver DESIGN-cloud-posture.md §4; no hay SUB_CATEGORY como en PC).
+# Agnóstica: el primer family (en el orden de `families` de arriba) con un keyword que sea substring
+# del control.name (lowercase) gana; lo que no matchea ninguno cae en default_family y se LISTA en
+# gaps.md (no se inventa familia). Editar acá para refinar — no hardcodear en el generador.
+classification:
+  default_family: hardening
+  # priority: frases de ALTA prioridad que ganan ANTES del orden de familias. Para controles
+  # COMPUESTOS de detección/registro ("log metric filter and alerts exists for <X>", "<X> is
+  # monitored") que conceptualmente son AUDITORÍA aunque mencionen IAM/role/mfa (que matchearían
+  # acceso primero). Validado live (AWS monitoring CIDs 27-40, GCP log-metric CIDs 52011-52017).
+  priority:
+    auditoria: ["log metric filter", "alerts exists", "is monitored", "are monitored"]
+  keywords:
+    acceso: [iam, mfa, "multi-factor", password, "access key", "root account", privilege, "least privilege", " role", "conditional access", pim, "2sv", identity, rbac, "grant access", everyone, "does not have cross-account access", "excess permission", "session timeout", cifs, "api key", "master username", "transfer lock"]
+    cifrado: [encrypt, kms, cmk, cmek, "key vault", tls, ssl, "at-rest", "at rest", "in-transit", "in transit", "secure transfer", "customer-managed key", "customer managed key", "deny http", "http subscription", "http requests", certificate, secret]
+    auditoria: [log, logging, cloudtrail, "activity log", "audit log", "cloud audit", "aws config", "diagnostic setting", monitor, alarm, "flow log", defender, "event subscription", "event notification", "config service", "config records", "configuration items for config", "security hub", guardduty, scanning, "asset inventory", "security contact"]
+    hardening: [public, "0.0.0.0", "block public", "security group", firewall, nsg, ingress, " port", anonymous, exposure, baseline, "publicly accessible", "version upgrade", "runtime version", "private vpc", immutable, imdsv2, "metadata service", nacl, "attached resource", dnssec, "privacy protection", "older than", "default network"]
+    disponibilidad: [backup, versioning, "multi-az", "multi az", replication, "soft delete", "soft-delete", grs, snapshot, retention, "high availability", "deletion protection", "auto renew", "not expired", "is expired", concurrent, "dead letter", backtrack, "termination protection"]
+    no_aplica: [tracing, "container insights", "performance insights", "ebs optimized", "eip addresses", "unused more than", "multiple triggers"]
+
+# Artefacto primario propuesto (read-only): mapping report control-cloud -> artículo
+# (mapping.csv + doc) + control-set de FAILs filtrado por estos CIDs. NO emite policy.xml.
+# NO dispara ningún POST (la creación de reportes/policies es mutación con human-gate). Ver §4/§6.
+emit:
+  primary_artifact: "mapping report (CID/control CSPM x artículo de la ley) + control-set de FAILs"
+  no_policy_xml: true
+  no_mutation: true
+  apply: "el cliente crea la Custom Policy por UI (Policy > New) y asigna connectors/tags — human-gate"
