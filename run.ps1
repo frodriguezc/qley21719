@@ -1,10 +1,13 @@
 <#
-  run.ps1 — orquestador END-TO-END del pack Ley 21.719 (Qualys), READ-ONLY (PowerShell).
+  run.ps1 - orquestador END-TO-END del pack Ley 21.719 (Qualys), READ-ONLY (PowerShell).
 
-  Crea/usa el venv, instala requirements, verifica módulos (POL/TC), corre ambos motores y
+  Crea/usa el venv, instala requirements, verifica modulos (POL/TC), corre ambos motores y
   arma el folder `deliverables/`. NO muta el tenant (los scripts son read-only; el import lo
   corre el cliente con subir.sh). Monitoreo: banners con timestamp + salida en vivo de cada
   paso (pip y los motores imprimen progreso) -> nunca parece "stalled".
+
+  ASCII-only a proposito: Windows PowerShell 5.1 lee un .ps1 SIN BOM con el codepage ANSI, y
+  caracteres no-ASCII (p.ej. el guion largo) se corrompen y rompen el parseo. Mantener en ASCII.
 
   Uso (PowerShell 5.1+ o PowerShell 7):
     Copy-Item .env.example .env   # completar QUALYS_POD/QUALYS_API_USER/QUALYS_API_PASSWORD
@@ -38,11 +41,11 @@ function Stream([string]$label, [scriptblock]$cmd, [switch]$Soft){
 }
 
 # ----------------------------------------------------------------------------- #
-Ts "qley21719 — pack Ley 21.719 (READ-ONLY) · max_hosts=$MaxHosts"
+Ts "qley21719 - pack Ley 21.719 (READ-ONLY) - max_hosts=$MaxHosts"
 
 $basePy = $null
 foreach ($c in @('python3','python','py')) { if (Get-Command $c -ErrorAction SilentlyContinue) { $basePy = $c; break } }
-if (-not $basePy) { Die 'No se encontró python (python3/python/py) en el PATH.' }
+if (-not $basePy) { Die 'No se encontro python (python3/python/py) en el PATH.' }
 Ts ("Python base: {0}" -f $basePy)
 
 if (-not (Test-Path $Py)) {
@@ -52,20 +55,20 @@ if (-not (Test-Path $Py)) {
 Stream "Instalando requirements" { & $Py -m pip install --disable-pip-version-check -r (Join-Path $Here 'requirements.txt') }
 
 if ((-not (Test-Path (Join-Path $Here '.env'))) -and (-not $env:QUALYS_API_USER)) {
-  Die "Faltan credenciales. Creá .env (Copy-Item .env.example .env) o definí `$env:QUALYS_POD/`$env:QUALYS_API_USER/`$env:QUALYS_API_PASSWORD."
+  Die "Faltan credenciales. Crea .env (Copy-Item .env.example .env) o define `$env:QUALYS_POD/`$env:QUALYS_API_USER/`$env:QUALYS_API_PASSWORD."
 }
 
 if (Test-Path $Deliv) { Remove-Item -Recurse -Force $Deliv }
 New-Item -ItemType Directory -Force -Path $Deliv | Out-Null
 
-# --- módulos (POL/TC): una probada, se muestra y se parsea --- #
-Ts "> Verificando módulos (POL/TC)"
+# --- modulos (POL/TC): una probada, se muestra y se parsea --- #
+Ts "> Verificando modulos (POL/TC)"
 $modout = & $Py -u scripts/check_modules.py --out (Join-Path $Deliv '0-modulos.md') 2>&1 | ForEach-Object { "$_" }
-if ($LASTEXITCODE -ne 0) { $modout | ForEach-Object { Write-Host "    $_" }; Die "check_modules (¿credenciales válidas?)" }
+if ($LASTEXITCODE -ne 0) { $modout | ForEach-Object { Write-Host "    $_" }; Die "check_modules (credenciales validas?)" }
 $modout | Where-Object { $_ -notmatch '^(POL|TC)=' } | ForEach-Object { Write-Host "    $_" }
 $POL = (($modout | Where-Object { $_ -match '^POL=' } | Select-Object -Last 1) -split '=')[1]
 $TC  = (($modout | Where-Object { $_ -match '^TC='  } | Select-Object -Last 1) -split '=')[1]
-Ts "OK Módulos: POL=$POL · TC=$TC"
+Ts "OK Modulos: POL=$POL  TC=$TC"
 
 # --- Policy Compliance (POL) --- #
 if ($POL -eq 'yes') {
@@ -88,7 +91,7 @@ if ($POL -eq 'yes') {
       }
     }
   }
-} else { Ts "! POL no disponible — se omite el pack Policy Compliance." }
+} else { Ts "! POL no disponible - se omite el pack Policy Compliance." }
 
 # --- Cloud posture (TC) --- #
 if ($TC -eq 'yes') {
@@ -103,26 +106,28 @@ if ($TC -eq 'yes') {
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     Copy-Item -Recurse -Force (Join-Path $cp '*') $dst
   }
-} else { Ts "! TC no disponible — se omite el pack cloud-posture." }
+} else { Ts "! TC no disponible - se omite el pack cloud-posture." }
 
-# --- índice --- #
+# --- indice (here-string de comillas simples: |, *, backticks son literales) --- #
 $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-@(
-  "# Deliverables — Ley 21.719 (Qualys) — READ-ONLY"
-  ""
-  "Generado: $now · POL=$POL · TC=$TC"
-  ""
-  "| # | Archivo | Qué es |"
-  "|---|---|---|"
-  "| 0 | ``0-modulos.md`` | Módulos POL/TC disponibles en el tenant (y si falta alguno). |"
-  "| 1 | ``1-CIS-a-importar-en-POL.txt`` | Benchmarks CIS a cargar en Policy Compliance (Import from Library). |"
-  "| 2 | ``2-policy-xml/{base,sensible}/policy.xml`` | La política importable de la Ley + import-instructions.md. |"
-  "| 2 | ``2-policy-xml/subir.sh`` | Comando de import (lo corre el CLIENTE — human-gate). |"
-  "| 3 | ``3-cloud-posture-CSPM/<prov>/<cuenta>/`` | Mapeo de posture cloud (CSPM) por cuenta. |"
-  ""
-  "**IMPORTANTE:** policy.xml lleva valores CIS endurecidos (contenido licenciado) y este folder"
-  "datos del tenant -> NO se commitea (gitignored). El import lo ejecuta el cliente."
-) | Set-Content -Encoding UTF8 (Join-Path $Deliv 'LEEME.md')
+$leeme = @'
+# Deliverables - Ley 21.719 (Qualys) - READ-ONLY
+
+Generado: __META__
+
+| # | Archivo | Que es |
+|---|---|---|
+| 0 | `0-modulos.md` | Modulos POL/TC disponibles en el tenant (y si falta alguno). |
+| 1 | `1-CIS-a-importar-en-POL.txt` | Benchmarks CIS a cargar en Policy Compliance (Import from Library). |
+| 2 | `2-policy-xml/{base,sensible}/policy.xml` | La politica importable de la Ley + import-instructions.md. |
+| 2 | `2-policy-xml/subir.sh` | Comando de import (lo corre el CLIENTE - human-gate). |
+| 3 | `3-cloud-posture-CSPM/<prov>/<cuenta>/` | Mapeo de posture cloud (CSPM) por cuenta. |
+
+**IMPORTANTE:** policy.xml lleva valores CIS endurecidos (contenido licenciado) y este folder
+datos del tenant -> NO se commitea (gitignored). El import lo ejecuta el cliente.
+'@
+$leeme = $leeme -replace '__META__', "$now  POL=$POL  TC=$TC"
+Set-Content -Path (Join-Path $Deliv 'LEEME.md') -Value $leeme -Encoding UTF8
 
 Ts "OK LISTO. Deliverables en: deliverables/"
 Get-ChildItem -Recurse -File $Deliv | ForEach-Object { Write-Host ("    " + $_.FullName.Substring($Deliv.Length+1)) }
