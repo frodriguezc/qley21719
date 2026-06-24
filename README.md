@@ -44,7 +44,9 @@ Variables opcionales: `MAX_HOSTS=5000` (tope de hosts a barrer), `PACK_NAME="Ley
 | 0 | `0-modulos.md` | Qué módulos tiene el tenant (**POL** / **TC**) y, si falta alguno, lo indica. |
 | 1 | `1-CIS-a-importar-en-POL.txt` | Los **benchmarks CIS a cargar** en Policy Compliance: `[A]` por SO de la flota · `[B]` por software · `[C]` a verificar. |
 | 2 | `2-policy-xml/{base,sensible}/policy.xml` | La **política importable** de la Ley, en **dos niveles** (ver abajo) + `import-instructions.md`. |
-| 2 | `2-policy-xml/subir.sh` | El comando de import — **lo corres tú** (human-gate). |
+| 2 | `2-policy-xml/subir.sh` | El comando de import como **política nueva** — **lo corres tú** (human-gate). |
+| 2 | `2-policy-xml/subir-merge.sh` | Alternativa: **merge in-place** sobre una política Ley ya afinada, con **preview** primero (no guarda nada) — **lo corres tú**. Sobrescribe tu tuning de los controles comunes; si solo querés sumar cobertura, usá `subir.sh`. |
+| 2 | `2-policy-xml/drift.md` | (con `--drift`) Diff **read-only** entre la política Ley ya importada y el pack regenerado: qué CIDs faltan, cuáles sobran y cuáles cambiaron. |
 | 3 | `3-cloud-posture-CSPM/<proveedor>/<cuenta>/` | Mapeo de postura cloud por cuenta: `mapping.csv` (control → familia → artículo, PASS/FAIL), `fails.csv`, `gaps.md`. |
 
 > `deliverables/` lleva el `policy.xml` (valores CIS endurecidos = **contenido licenciado**) y datos del

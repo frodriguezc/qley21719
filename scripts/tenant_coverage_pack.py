@@ -250,6 +250,64 @@ def _q(s: str) -> str:
     return urllib.parse.quote(s)
 
 
+def _match_ley_policies(policies: list[tuple[str, str]], name: str) -> list[tuple[str, str]]:
+    """Policies del tenant cuyo título matchea el pack (para merge in-place / drift). Normaliza y
+    compara por contención del núcleo del nombre o por la referencia a la ley (21.719 / 21719)."""
+    core = slugify(name).replace("-", "")
+    out = []
+    for pid, title in policies:
+        t, ts = title.lower(), slugify(title).replace("-", "")
+        if (core and core in ts) or "21.719" in t or "21719" in ts:
+            out.append((pid, title))
+    return out
+
+
+def _write_subir_merge_sh(path: Path, server: str, levels: dict, name: str,
+                          existing_id: str | None, candidates: list[tuple[str, str]]) -> None:
+    """ALTERNATIVA a subir.sh: actualizar IN-PLACE una policy Ley YA importada y afinada, en vez de
+    re-importar una nueva. Emite preview_merge=1 (PASO 1, no-committing) y el merge real comentado
+    (PASO 2). Lo corre el CLIENTE; la herramienta es READ-ONLY y NO ejecuta esto."""
+    base = server.rstrip("/")
+    lines = [
+        "#!/usr/bin/env bash",
+        "# ALTERNATIVA a subir.sh: ACTUALIZAR IN-PLACE una policy Ley YA importada y afinada,",
+        "# en vez de re-importar una nueva. Lo corre el CLIENTE (human-gate); la herramienta es",
+        "# READ-ONLY y NO ejecuta esto. Requiere QUALYS_API_USER / QUALYS_API_PASSWORD en el entorno.",
+        "#",
+        "# OJO: action=merge&update_existing_controls=1 SOBREESCRIBE en la policy destino los controles",
+        "# comunes (status/criticidad/valores). Tus EXCEPCIONES y valores ajustados de esos CIDs se",
+        "# pierden. Por eso el PASO 1 es un preview_merge=1 (no guarda nada): revisá el diff primero.",
+        "# Para SUMAR cobertura sin tocar tu tuning, preferí re-importar como policy nueva (subir.sh).",
+        "set -euo pipefail", ""]
+    if existing_id:
+        lines += [f'POLICY_ID="{existing_id}"   # policy Ley detectada en el tenant', ""]
+    else:
+        lines.append("# No se detectó UNA sola policy Ley en el tenant. Completá el id a mano:")
+        for pid, title in candidates:
+            lines.append(f"#   candidato id={pid}  title={title!r}")
+        lines += ['POLICY_ID="<EXISTING_POLICY_ID>"   # <-- COMPLETAR', ""]
+    for lid, lv in levels.items():
+        xml = Path(lv["out_dir"]) / "policy.xml"
+        url = f"{base}/api/4.0/fo/compliance/policy/?action=merge&id=$POLICY_ID&update_existing_controls=1"
+        lines += [
+            f'# --- nivel {lid} ({lv.get("included", "?")} controles) ---',
+            "# PASO 1 — PREVIEW (no guarda nada): revisá qué cambiaría.",
+            'curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
+            '     -H "X-Requested-With: tenant-coverage-pack" \\',
+            '     -H "Content-Type: text/xml" \\',
+            f'     --data-binary @"{xml}" \\',
+            f'     "{url}&preview_merge=1"',
+            "",
+            "# PASO 2 — COMMIT (descomentar SOLO tras revisar el preview):",
+            '# curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
+            '#      -H "X-Requested-With: tenant-coverage-pack" \\',
+            '#      -H "Content-Type: text/xml" \\',
+            f'#      --data-binary @"{xml}" \\',
+            f'#      "{url}"', ""]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
 # --------------------------------------------------------------------------- #
 # Orquestador
 # --------------------------------------------------------------------------- #
@@ -316,8 +374,15 @@ def run(args) -> int:
     print("[5/5] Emitiendo faltantes.txt + subir.sh…")
     _write_faltantes(out / "faltantes.txt", catalog, rec, os_counts, total, no_os,
                      bool(software), present_sources, client.pod, args.name, now)
+    drift_done = None
     if result:
         _write_subir_sh(out / "subir.sh", client.server, result["levels"], args.name)
+        # subir-merge.sh: alternativa de merge in-place (preview-first) para una policy ya afinada.
+        cand = _match_ley_policies(policies, args.name)
+        _write_subir_merge_sh(out / "subir-merge.sh", client.server, result["levels"], args.name,
+                              cand[0][0] if len(cand) == 1 else None, cand)
+        if args.drift:
+            drift_done = _emit_drift(out, client, policies, title_by_id, result, args, log)
 
     link_latest(run_dir)
     log.info(f"done calls={client.call_count} out={out}")
@@ -326,9 +391,55 @@ def run(args) -> int:
     if result:
         for lid, lv in result["levels"].items():
             print(f"  - {lid}/policy.xml ({lv['included']} controles)")
-        print(f"  - subir.sh        (import — lo corre el CLIENTE, human-gate)")
+        print(f"  - subir.sh        (import como policy NUEVA — lo corre el CLIENTE, human-gate)")
+        print(f"  - subir-merge.sh  (merge IN-PLACE con preview — lo corre el CLIENTE, human-gate)")
+        if drift_done is not None:
+            print(f"  - drift.md        ({drift_done})")
     print(f"  - run.log         (traza de la corrida, sin credenciales)")
     return 0
+
+
+def _emit_drift(out: Path, client, policies, title_by_id, result, args, log) -> str:
+    """Emite drift.md: export READ-ONLY de la policy Ley viva vs el pack regenerado. Devuelve una
+    etiqueta corta para el resumen en consola. Nunca muta nada."""
+    from compliance_pack import drift as _drift
+    from compliance_pack.generator import _export_policy
+    lvls = result["levels"]
+    gen_lid = "sensible" if "sensible" in lvls else next(iter(lvls))
+    gen_path = Path(lvls[gen_lid]["out_dir"]) / "policy.xml"
+
+    if args.drift_policy_id:
+        cand = [(args.drift_policy_id, title_by_id.get(args.drift_policy_id, "(id forzado)"))]
+    else:
+        cand = _match_ley_policies(policies, args.name)
+
+    if len(cand) != 1:
+        msg = ("# Drift — policy Ley importada vs pack regenerado\n\n" + (
+            "Sin policy Ley previa en el tenant — nada que diferenciar. "
+            "(Tras importar `subir.sh` una primera vez, una próxima corrida con `--drift` la comparará.)\n"
+            if not cand else
+            "Varias policies candidatas; re-corré con `--drift-policy-id <id>`:\n\n"
+            + "".join(f"- `{pid}`  {ti}\n" for pid, ti in cand)))
+        (out / "drift.md").write_text(msg, encoding="utf-8")
+        log.info(f"drift candidates={len(cand)} (no único) -> drift.md informativo")
+        return "sin policy previa" if not cand else "varias candidatas (ver drift.md)"
+
+    live_pid, live_title = cand[0]
+    try:
+        live = _drift.walk_controls(_export_policy(client, live_pid))
+        gen = _drift.walk_controls(ET.fromstring(gen_path.read_text(encoding="utf-8")))
+        d = _drift.diff_cids(live, gen, ui_safe=True)
+        md = _drift.render_md(d, live_title, lvls[gen_lid]["title"], gen_lid, live_pid, ui_safe=True)
+        (out / "drift.md").write_text(md, encoding="utf-8")
+        log.info(f"drift live_pid={live_pid} missing={len(d['missing_from_live'])} "
+                 f"extra={len(d['extra_in_live'])} changed={len(d['changed'])}")
+        return (f"vs id {live_pid}: {len(d['missing_from_live'])} a sumar / "
+                f"{len(d['extra_in_live'])} solo viva / {len(d['changed'])} cambiados")
+    except Exception as e:  # noqa: BLE001 — best-effort: drift no debe abortar el pack
+        (out / "drift.md").write_text(
+            f"# Drift\n\nNo se pudo generar (export de la policy `{live_pid}`): {e}\n", encoding="utf-8")
+        log.info(f"drift error {e}")
+        return f"error (ver drift.md)"
 
 
 def _now() -> str:
@@ -345,6 +456,10 @@ def main() -> int:
     ap.add_argument("--level", default="", help="Nivel (base|sensible). Vacío = ambos.")
     ap.add_argument("--max-hosts", type=int, default=5000, help="Tope de hosts a barrer.")
     ap.add_argument("--refresh", action="store_true", help="Forzar re-cosecha live del harvest.")
+    ap.add_argument("--drift", action="store_true",
+                    help="Emitir drift.md: export READ-ONLY de la policy Ley ya importada vs el pack regenerado.")
+    ap.add_argument("--drift-policy-id", default="",
+                    help="Forzar el id de la policy viva para el drift (si hay varias candidatas).")
     ap.add_argument("--pod", default="", help="POD (si no, env/.env).")
     ap.add_argument("--user", default="", help="API user (si no, env/.env).")
     ap.add_argument("--password", default="", help="API password (si no, env/.env).")
