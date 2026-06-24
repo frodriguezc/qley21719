@@ -71,6 +71,9 @@ tags/groups). Para sumar tecnologías: importar los benchmarks de `faltantes.txt
 
 ## 5. Convenciones de cambios
 
+- **Flujo de cambios (`main` protegida):** los cambios van **por Pull Request** (no push directo a `main`)
+  y la **CI `tests` debe estar en verde** para mergear. Ver `CONTRIBUTING.md`. El admin puede saltear la
+  protección, pero el flujo por defecto es PR.
 - Mantener el **invariante read-only** al tocar `qualys_client/` (no agregar `fo_post`/acciones de escritura
   sin un gate explícito).
 - El **catálogo** `cis_catalog.yaml` es el lugar para ampliar cobertura (no hardcodear en el script):
