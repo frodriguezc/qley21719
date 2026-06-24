@@ -38,6 +38,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from qualys_client import QualysClient, from_env  # noqa: E402
 from compliance_pack import generate_pack  # noqa: E402
+from scripts._runtime import (  # noqa: E402
+    slugify, resolve_run_dir, preflight_writable, link_latest, setup_run_log)
 
 
 # --------------------------------------------------------------------------- #
@@ -258,20 +260,29 @@ def run(args) -> int:
         client = from_env()
 
     catalog = yaml.safe_load((ROOT / args.catalog).read_text())
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    base = Path(args.out)
+    preflight_writable(base)                      # falla rápido ANTES de tocar el tenant
+    run_dir, run_id = resolve_run_dir(base, slugify(args.name))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = run_dir
+    log = setup_run_log(run_dir)
+    log.info(f"start run_id={run_id} pod={client.pod} server={client.server} "
+             f"out={out} max_hosts={args.max_hosts} level={args.level or 'all'} name={args.name!r}")
 
     print(f"[1/5] Barriendo inventario (POD {client.pod}, máx {args.max_hosts} hosts)…")
     os_counts, total, no_os = _fleet_os(client, args.max_hosts)
     print(f"      {total} hosts · {len(os_counts)} variantes de SO · {no_os} sin SO")
+    log.info(f"fleet hosts={total} os_variants={len(os_counts)} no_os={no_os}")
 
     print("[2/5] Inferencia best-effort de software (CSAM)…")
     software = _fleet_software(client, args.max_hosts)
     print(f"      {len(software)} nombres de software ({'CSAM disponible' if software else 'sin software -> DB/middleware a verificar'})")
+    log.info(f"software names={len(software)} csam={'yes' if software else 'no'}")
 
     print("[3/5] Listando policies importadas…")
     policies = _imported_policies(client)
     print(f"      {len(policies)} policies en el tenant")
+    log.info(f"policies imported={len(policies)}")
 
     rec = reconcile(catalog, os_counts, software, policies)
 
@@ -295,8 +306,12 @@ def run(args) -> int:
                                level=args.level or None, refresh=args.refresh, ui_safe=True)
         print(f"      harvested={result['harvested']} classified={result['classified']} "
               f"unclassified={result['unclassified']} ok={result['ok']}")
+        log.info(f"pack source={result['source']} harvested={result['harvested']} "
+                 f"classified={result['classified']} unclassified={result['unclassified']} "
+                 f"src_ids={','.join(src_ids)} ok={result['ok']}")
     else:
         print("[4/5] Sin benchmarks CIS importados -> se omite el policy.xml (solo faltantes).")
+        log.info("pack skipped (sin benchmarks CIS importados)")
 
     print("[5/5] Emitiendo faltantes.txt + subir.sh…")
     _write_faltantes(out / "faltantes.txt", catalog, rec, os_counts, total, no_os,
@@ -304,12 +319,15 @@ def run(args) -> int:
     if result:
         _write_subir_sh(out / "subir.sh", client.server, result["levels"], args.name)
 
-    print(f"\nSalida: {out}/")
+    link_latest(run_dir)
+    log.info(f"done calls={client.call_count} out={out}")
+    print(f"\nSalida: {out}/   (también: {run_dir.parent / 'latest'})")
     print(f"  - faltantes.txt   (qué importar para cobertura completa)")
     if result:
         for lid, lv in result["levels"].items():
             print(f"  - {lid}/policy.xml ({lv['included']} controles)")
         print(f"  - subir.sh        (import — lo corre el CLIENTE, human-gate)")
+    print(f"  - run.log         (traza de la corrida, sin credenciales)")
     return 0
 
 
