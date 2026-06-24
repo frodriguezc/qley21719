@@ -21,8 +21,20 @@ Set-Location $Here
 $Venv  = Join-Path $Here '.venv'
 $Art   = Join-Path $Here 'artifacts'
 $Deliv = Join-Path $Here 'deliverables'
-$MaxHosts = if ($env:MAX_HOSTS) { $env:MAX_HOSTS } else { '3000' }
-$Name     = if ($env:PACK_NAME) { $env:PACK_NAME } else { 'Ley 21.719 - Medidas de Seguridad' }
+
+# lee una clave de .env (KEY=VALUE; ignora comillas/espacios/comentarios inline). $null si no esta.
+function Get-DotEnv([string]$key){
+  $f = Join-Path $Here '.env'
+  if (-not (Test-Path $f)) { return $null }
+  $m = Select-String -Path $f -Pattern ('^\s*' + [regex]::Escape($key) + '\s*=') | Select-Object -Last 1
+  if (-not $m) { return $null }
+  $v = ($m.Line -replace '^[^=]*=\s*','' -replace '\s+#.*$','').Trim().Trim("'").Trim('"')
+  if ($v) { return $v } else { return $null }
+}
+
+# precedencia: variable de entorno > .env > default
+$MaxHosts = $env:MAX_HOSTS; if (-not $MaxHosts) { $MaxHosts = Get-DotEnv 'MAX_HOSTS' }; if (-not $MaxHosts) { $MaxHosts = '300' }
+$Name     = $env:PACK_NAME; if (-not $Name)     { $Name     = Get-DotEnv 'PACK_NAME' }; if (-not $Name)     { $Name = 'Ley 21.719 - Medidas de Seguridad' }
 
 $onWin = ($env:OS -eq 'Windows_NT')
 $Py = if ($onWin) { Join-Path $Venv 'Scripts\python.exe' } else { Join-Path $Venv 'bin/python' }

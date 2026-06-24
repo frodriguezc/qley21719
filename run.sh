@@ -16,8 +16,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 VENV="$HERE/.venv"; PY="$VENV/bin/python"
 ART="$HERE/artifacts"; DELIV="$HERE/deliverables"
-MAXHOSTS="${MAX_HOSTS:-3000}"
-NAME="${PACK_NAME:-Ley 21.719 - Medidas de Seguridad}"
+
+# lee una clave de .env (KEY=VALUE; ignora comillas, espacios y comentarios inline). Vacío si no está.
+dotenv_get(){ [ -f "$HERE/.env" ] || return 0
+  grep -E "^[[:space:]]*$1[[:space:]]*=" "$HERE/.env" 2>/dev/null | tail -1 \
+    | sed -E "s/^[^=]*=[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]*$//; s/^[\"']//; s/[\"']$//"; }
+
+# precedencia: variable de entorno > .env > default
+MAXHOSTS="${MAX_HOSTS:-$(dotenv_get MAX_HOSTS)}"; MAXHOSTS="${MAXHOSTS:-300}"
+NAME="${PACK_NAME:-$(dotenv_get PACK_NAME)}";     NAME="${NAME:-Ley 21.719 - Medidas de Seguridad}"
 
 ts(){ printf '\033[2K\r[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die(){ ts "✗ ERROR: $*"; exit 1; }
