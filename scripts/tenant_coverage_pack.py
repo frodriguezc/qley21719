@@ -316,6 +316,7 @@ def run(args) -> int:
         client = QualysClient(args.pod, args.user, args.password)
     else:
         client = from_env()
+    client.debug = getattr(args, "debug", False)  # surfacing del throttle/backoff (stderr, secret-safe)
 
     catalog = yaml.safe_load((ROOT / args.catalog).read_text())
     base = Path(args.out)
@@ -324,6 +325,9 @@ def run(args) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     out = run_dir
     log = setup_run_log(run_dir)
+    # Persistir cada backoff al run.log (UTC, secret-safe) aunque no se pase --debug: el throttle
+    # silencioso era invisible. El filtro de redacción del handler es defensa en profundidad.
+    client.on_throttle = lambda note: log.warning(f"throttle {note}")
     log.info(f"start run_id={run_id} pod={client.pod} server={client.server} "
              f"out={out} max_hosts={args.max_hosts} level={args.level or 'all'} name={args.name!r}")
 
@@ -360,8 +364,14 @@ def run(args) -> int:
         print(f"[4/5] Generando policy.xml desde {len(src_ids)} benchmarks importados…")
         # spec relativo a ROOT (viaja con la herramienta), igual que el catálogo -> CWD-independiente.
         spec_path = args.spec if Path(args.spec).is_absolute() else str(ROOT / args.spec)
+
+        def _pack_progress(msg: str) -> None:  # latido del harvest: a stdout (UX) y al run.log (post-mortem)
+            print(f"      … {msg}", flush=True)
+            log.info(f"pack {msg}")
+
         result = generate_pack(spec_path, str(out), client=client, source_ids=src_ids,
-                               level=args.level or None, refresh=args.refresh, ui_safe=True)
+                               level=args.level or None, refresh=args.refresh, ui_safe=True,
+                               progress=_pack_progress)
         print(f"      harvested={result['harvested']} classified={result['classified']} "
               f"unclassified={result['unclassified']} ok={result['ok']}")
         log.info(f"pack source={result['source']} harvested={result['harvested']} "
@@ -463,6 +473,9 @@ def main() -> int:
     ap.add_argument("--pod", default="", help="POD (si no, env/.env).")
     ap.add_argument("--user", default="", help="API user (si no, env/.env).")
     ap.add_argument("--password", default="", help="API password (si no, env/.env).")
+    ap.add_argument("--debug", action="store_true",
+                    help="Emitir a stderr el diagnóstico de throttle/backoff (concurrency vs rate, "
+                         "headers de Qualys, segundos de espera). Sin credenciales. Default: off.")
     args = ap.parse_args()
     return run(args)
 

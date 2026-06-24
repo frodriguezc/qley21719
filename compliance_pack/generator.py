@@ -127,12 +127,17 @@ def _resolve_categories(get_client, cids: list[str], cache_path: Path) -> dict:
 # --------------------------------------------------------------------------- #
 # Harvest + clasificacion
 # --------------------------------------------------------------------------- #
-def _harvest(client, sources: list[dict]) -> tuple[OrderedDict, dict]:
-    """Devuelve (cid -> CONTROL element merged, cid -> set(source labels))."""
+def _harvest(client, sources: list[dict], progress=None) -> tuple[OrderedDict, dict]:
+    """Devuelve (cid -> CONTROL element merged, cid -> set(source labels)).
+    `progress(msg)` opcional: se invoca una vez por benchmark ANTES de exportarlo, para que el
+    caller emita un latido (el export live de cada benchmark es la parte lenta del pack)."""
     controls: OrderedDict[str, ET.Element] = OrderedDict()
     provenance: dict[str, set] = defaultdict(set)
-    for src in sources:
+    total = len(sources)
+    for i, src in enumerate(sources, 1):
         pid, label = str(src["id"]), src["label"]
+        if progress:
+            progress(f"cosechando benchmark {i}/{total}: {label}")
         root = _export_policy(client, pid)
         for ctl in root.findall(".//CONTROL"):
             cid = (ctl.findtext("ID") or "").strip()
@@ -168,7 +173,8 @@ def _merge_technologies(dst_ctl: ET.Element, src_ctl: ET.Element) -> None:
 # licenciado del tenant del cliente -> NO se commitea (vive en artifacts/cache/).
 # --------------------------------------------------------------------------- #
 def _harvest_cached(cache_path: Path, source_ids: list[str], sources: list[dict],
-                    get_client, refresh: bool, offline: bool) -> tuple[OrderedDict, dict, dict]:
+                    get_client, refresh: bool, offline: bool,
+                    progress=None) -> tuple[OrderedDict, dict, dict]:
     """Devuelve (controls, provenance, meta). Usa el cache si cubre EXACTAMENTE el mismo set de
     fuentes (y no se pidio refresh); si no, cosecha live (salvo offline=True -> error). meta trae
     {server, pod, harvested_at, source_ids}."""
@@ -187,7 +193,7 @@ def _harvest_cached(cache_path: Path, source_ids: list[str], sources: list[dict]
             "offline=True pero el cache de harvest no cubre estas fuentes "
             f"({cache_path}). Corre una vez ONLINE (con las policies importadas) para poblarlo.")
     client = get_client()
-    controls, provenance = _harvest(client, sources)
+    controls, provenance = _harvest(client, sources, progress=progress)
     meta = {"server": client.server, "pod": client.pod,
             "harvested_at": _now(), "source_ids": want}
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -591,7 +597,7 @@ def _emit_level(spec, out: Path, lv: dict, controls: OrderedDict, by_family_all:
 def generate_pack(spec_path: str, out_dir: str, client=None,
                   source_ids: list[str] | None = None, level: str | None = None,
                   offline: bool = False, refresh: bool = False,
-                  ui_safe: bool = False) -> dict:
+                  ui_safe: bool = False, progress=None) -> dict:
     """Genera el pack. Cosecha+clasifica UNA vez (independiente del nivel) y emite cada nivel
     (`levels:` del spec) en su subcarpeta. `level` genera uno solo.
 
@@ -630,12 +636,14 @@ def generate_pack(spec_path: str, out_dir: str, client=None,
 
     # 1. harvest (cache-first) — los controles se conservan intactos (el filtro por nivel es no-destructivo)
     controls, provenance, meta = _harvest_cached(
-        harvest_cache, src_ids, spec["sources"], get_client, refresh, offline)
+        harvest_cache, src_ids, spec["sources"], get_client, refresh, offline, progress=progress)
     all_cids = list(controls.keys())
     server = meta.get("server") or (_holder["c"].server if _holder["c"] else "")
     pod = meta.get("pod") or (_holder["c"].pod if _holder["c"] else None)
 
     # 2. categories (cache-first; solo pega al tenant si faltan CIDs)
+    if progress:
+        progress(f"resolviendo categorías de {len(all_cids)} controles…")
     cats = _resolve_categories(get_client, all_cids, cat_cache)
 
     # 3. classify (una vez; independiente del nivel)
