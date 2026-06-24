@@ -157,6 +157,40 @@ def test_build_pack_emits_artifacts_and_stats():
         assert "11" in fails and "PASS" not in fails.split("\n", 1)[1]
 
 
+def test_apply_instructions_report_api_section_aws():
+    # El emisor agrega la subsección §3b (curl de reporte por API) provider-aware, sin credenciales.
+    with tempfile.TemporaryDirectory() as d:
+        build_pack([], {}, SPEC, d, provider="aws", account="687245677417")
+        md = (Path(d) / "apply-instructions.md").read_text(encoding="utf-8")
+    # la subsección y los endpoints verificados (assessment = POST verificado)
+    assert "## 3b" in md
+    assert "report/assessment/create" in md and "report/assessment/list" in md
+    assert "/download?reportFormat=csv" in md
+    assert "/cloudview-api/rest/v1/reports/mandates" in md      # mandate report
+    # provider-aware: sustituye PROVIDER/CLOUD_TYPE/SCOPE_ID del scope
+    assert "PROVIDER=aws CLOUD_TYPE=AWS SCOPE_ID=687245677417" in md
+    # host correcto (portal, no FO) y prerrequisito de permiso
+    assert "qualysguard.<seg>.apps.qualys.com" in md
+    assert "Reporting Permission" in md
+    # human-gate / read-only honesto: es POST = mutación que corre el cliente
+    assert "MUTACIÓN" in md and "la herramienta NO lo" in md
+    # SIN credenciales en claro: solo placeholders por entorno
+    assert "$QUALYS_API_PASSWORD" in md
+    assert "QUALYS_API_PASSWORD=" not in md                     # nunca un valor asignado en claro
+    # citas a doc público (no paths locales)
+    assert "docs.qualys.com/en/cloudview/latest/reports/" in md
+
+
+def test_apply_instructions_report_api_section_oci_caveat():
+    # OCI: la API de reportes v1.23 documenta solo AWS/Azure/GCP -> la doc debe marcar "verificar".
+    with tempfile.TemporaryDirectory() as d:
+        build_pack([], {}, SPEC, d, provider="oci", account="ocid1.tenancy.oc1..xxxx")
+        md = (Path(d) / "apply-instructions.md").read_text(encoding="utf-8")
+    assert "PROVIDER=oci CLOUD_TYPE=OCI" in md
+    assert "solo para AWS/Azure/GCP" in md                      # callout de caveat OCI
+    assert "usá el flujo de **consola**" in md
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
