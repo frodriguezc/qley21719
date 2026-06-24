@@ -72,6 +72,11 @@ El cliente importa (UI: Policies > New > Import from XML File, o `bash subir.sh`
 tags/groups). Para sumar tecnologías: importar los benchmarks de `faltantes.txt` desde la librería y
 **re-correr** la herramienta. Ver `README.md` (cara al cliente) y `compliance_pack/README.md`.
 
+**Observabilidad de la corrida.** El `run.log` registra (UTC, secret-safe) cada **backoff** por throttle
+(`429/409`) y el **latido del harvest** (`cosechando N/total`) — útil porque exportar benchmarks grandes es
+la parte lenta y antes quedaba en silencio. Con `--debug`, el diagnóstico de throttle (concurrency vs rate,
+headers de Qualys, segundos de espera) además sale a **stderr** en vivo. Nada de esto loguea credenciales.
+
 ## 5. Convenciones de cambios
 
 - **Flujo de cambios (`main` protegida):** los cambios van **por Pull Request** (no push directo a `main`)
