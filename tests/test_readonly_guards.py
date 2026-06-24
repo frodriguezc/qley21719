@@ -107,6 +107,53 @@ def test_qps_body_builder_escapes_and_limits():
     assert QualysClient._qps_body(criteria=[{"field": "f", "operator": "EQ", "value": ""}]) == ""
 
 
+def test_qps_body_start_from_id_cursor():
+    # El cursor de paginacion emite <startFromId> junto al <limitResults>, dentro de <preferences>.
+    body = QualysClient._qps_body(limit=500, start_from_id=42)
+    assert "<startFromId>42</startFromId>" in body
+    assert "<limitResults>500</limitResults>" in body
+    assert body.index("<startFromId>") < body.index("<limitResults>")
+    assert "<preferences>" in body
+    # sin cursor: no aparece startFromId (retrocompat)
+    assert "<startFromId>" not in QualysClient._qps_body(limit=10)
+
+
+# --- Backoff: honra el wait que pide el server (sin truncar a 60s) --------- #
+class _Resp:
+    """Response minima con headers para probar el calculo de backoff (sin red, sin sleep)."""
+    def __init__(self, status=429, headers=None):
+        self.status_code = status
+        self.headers = headers or {}
+
+
+def test_retry_after_honors_long_server_wait():
+    # Antes se truncaba a 60s; ahora honra hasta _MAX_BACKOFF_SEC (300s) lo que pide Qualys.
+    assert qc._retry_after_seconds(_Resp(headers={"X-RateLimit-ToWait-Sec": "300"}), 0) == 300
+    assert qc._retry_after_seconds(_Resp(headers={"Retry-After": "120"}), 0) == 120
+
+
+def test_retry_after_caps_at_max_backoff():
+    # Un valor absurdo del server no debe dormir indefinido: se acota al techo.
+    assert qc._retry_after_seconds(_Resp(headers={"X-RateLimit-ToWait-Sec": "99999"}), 0) == qc._MAX_BACKOFF_SEC
+
+
+def test_retry_after_linear_when_no_header():
+    # Sin header de espera -> backoff lineal 15*(retry+1).
+    assert qc._retry_after_seconds(_Resp(headers={}), 0) == 15
+    assert qc._retry_after_seconds(_Resp(headers={}), 2) == 45
+
+
+def test_throttle_note_distinguishes_concurrency():
+    # 409 o (429 con running>=limit) -> concurrency; nunca incluye credenciales.
+    note_409 = qc._throttle_note(_Resp(status=409, headers={}))
+    assert "concurrency" in note_409
+    note_sat = qc._throttle_note(_Resp(status=429, headers={
+        "X-Concurrency-Limit-Running": "10", "X-Concurrency-Limit-Limit": "10"}))
+    assert "concurrency" in note_sat
+    note_rate = qc._throttle_note(_Resp(status=429, headers={"X-RateLimit-Remaining": "0"}))
+    assert "rate" in note_rate
+
+
 # --- Validacion de POD ----------------------------------------------------- #
 def test_unknown_pod_raises():
     try:

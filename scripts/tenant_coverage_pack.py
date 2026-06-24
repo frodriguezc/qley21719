@@ -74,21 +74,40 @@ def _fleet_os(client: QualysClient, max_hosts: int, page: int = 1000) -> tuple[C
 
 def _fleet_software(client: QualysClient, max_hosts: int, page: int = 500) -> set[str]:
     """Best-effort: nombres de software del inventario CSAM (QPS /search/am/hostasset). Si el tenant
-    no tiene CSAM o el campo no viene, devuelve set() (-> db/middleware caen en 'verificar')."""
+    no tiene CSAM o el campo no viene, devuelve set() (-> db/middleware caen en 'verificar').
+
+    Pagina por cursor (startFromId/lastId) igual que _fleet_os/_fetch_all_evaluations: en tenants con
+    >page host assets, una sola página subreportaba el software (-> faltantes.txt sección [B]). Sigue
+    siendo best-effort: cualquier HTTP!=200, error o schema viejo degrada al set acumulado."""
     found: set[str] = set()
+    start_from_id: int | None = None
+    scanned = 0
     try:
-        http, text = client.qps_search("/qps/rest/2.0/search/am/hostasset", limit=min(max_hosts, page))
-        if http != 200:
-            return found
-        root = ET.fromstring(text)
-        # CSAM expone software bajo .../softwareList/HostAssetSoftware/name (varía por versión);
-        # juntamos cualquier <name>/<fullName> que cuelgue de un nodo *software*.
-        for el in root.iter():
-            tag = el.tag.lower()
-            if "software" in tag:
-                for child in el.iter():
-                    if child.tag.lower() in ("name", "fullname") and (child.text or "").strip():
-                        found.add(child.text.strip().lower())
+        while scanned < max_hosts:
+            want = min(page, max_hosts - scanned)
+            http, text = client.qps_search("/qps/rest/2.0/search/am/hostasset",
+                                           limit=want, start_from_id=start_from_id)
+            if http != 200:
+                break
+            root = ET.fromstring(text)
+            page_hosts = 0
+            # CSAM expone software bajo .../softwareList/HostAssetSoftware/name (varía por versión);
+            # juntamos cualquier <name>/<fullName> que cuelgue de un nodo *software*, y contamos
+            # los <HostAsset> de la página para avanzar el cursor sin re-leer.
+            for el in root.iter():
+                tag = el.tag.lower()
+                if tag == "hostasset":
+                    page_hosts += 1
+                elif "software" in tag:
+                    for child in el.iter():
+                        if child.tag.lower() in ("name", "fullname") and (child.text or "").strip():
+                            found.add(child.text.strip().lower())
+            scanned += page_hosts
+            has_more = (root.findtext(".//hasMoreRecords") or "").strip().lower() == "true"
+            last_id = (root.findtext(".//lastId") or "").strip()
+            if page_hosts == 0 or not has_more or not last_id.isdigit():
+                break
+            start_from_id = int(last_id) + 1
     except Exception:
         return found
     return found
