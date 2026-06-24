@@ -209,8 +209,171 @@ def _write_gaps(path: str, gaps: list[dict], spec: dict) -> None:
         fh.write("\n".join(lines) + "\n")
 
 
+# Parámetros de reporte CSPM por provider: (cloudType del body, etiqueta del identificador de
+# scope). La API de reportes (Postman v1.23.0.0 / CloudView API User Guide) documenta `cloudType`
+# SOLO para AWS/Azure/GCP; OCI queda como "verificar" (se soporta en connectors/evaluations, no
+# confirmado en reportes). Fuente: docs.qualys.com/en/cloudview/latest/reports/.
+_CLOUD_REPORT_PARAMS = {
+    "aws":   ("AWS",   "account id"),
+    "azure": ("AZURE", "subscription id"),
+    "gcp":   ("GCP",   "project id"),
+    "oci":   ("OCI",   "tenant id (OCID)"),
+}
+
+# Subsección '3b' de apply-instructions. Plantilla con sentinelas __X__ (NO f-string: el cuerpo
+# lleva llaves JSON y `$VARS` de shell). Sin credenciales: el password va por $QUALYS_API_PASSWORD
+# (entorno), nunca en claro. Los `\\` son continuaciones de línea de shell en el .md emitido.
+_CLOUD_REPORT_TEMPLATE = r"""---
+
+## 3b — Generar el reporte vía API (opcional; lo corre el cliente)
+
+> **Crear/correr un reporte es una MUTACIÓN (POST) → human-gate.** Por eso **la herramienta NO lo
+> dispara** (invariante read-only: el `CloudViewClient` solo emite GETs allow-list). Estos `curl`
+> los corre **el cliente**, igual que el `subir.sh` del motor PC.
+>
+> **Prerrequisito:** el API user necesita *Reporting Permission* en CloudView (un Reader puro puede
+> no poder POSTear el `create`).
+
+__OCI_WARN__Namespace `cloudview-api/rest/v1` · Host **`qualysguard.<seg>.apps.qualys.com`** (NO el
+FO `qualysapi.*` → 404; es el mismo host que esta herramienta ya resolvió — ver `run.log`) · Auth
+HTTP Basic + header `X-Requested-With`.
+
+**Parámetros de este scope:**
+
+| Variable | Valor |
+|---|---|
+| `PROVIDER` (path) | `__PROVIDER__` |
+| `CLOUD_TYPE` (body) | `__CLOUD_TYPE__` |
+| `SCOPE_ID` (__SCOPE_LABEL__) | `__SCOPE_ID__` |
+| Reportes | __REPORTS__ |
+
+Referencia multi-provider — AWS→`AWS`/account · Azure→`AZURE`/subscription · GCP→`GCP`/project ·
+OCI→`OCI`/tenant (⚠️ verificar).
+
+**Variables** (definir en el shell; el password va por entorno, **nunca** en claro):
+
+```bash
+PLATFORM_URL="https://qualysguard.<seg>.apps.qualys.com"   # mismo host que usa la herramienta
+export QUALYS_API_USER QUALYS_API_PASSWORD                 # ya en el entorno; NO hardcodear
+PROVIDER=__PROVIDER__ CLOUD_TYPE=__CLOUD_TYPE__ SCOPE_ID=__SCOPE_ID__
+```
+
+### A) Assessment Report (snapshot multi-policy; CSV/PDF; asíncrono)
+
+```bash
+# 0) (read-only — ya lo hace la herramienta) resolver el connectorId del scope
+curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+  -H "Accept: application/json" \
+  "$PLATFORM_URL/cloudview-api/rest/v1/$PROVIDER/connectors"   # match $SCOPE_ID -> <CONNECTOR_ID>
+
+# 1) CREAR + correr el Assessment Report (POST = mutación -> lo corre el cliente) -> <REPORT_ID>
+curl -s -X POST -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \
+  -H "X-Requested-With: qley21719" -H "Content-Type: application/json" \
+  "$PLATFORM_URL/cloudview-api/rest/v1/report/assessment/create" \
+  -d '{
+    "reportName": "Ley 21.719 - <cliente>",
+    "format": "CSV",
+    "cloudType": "'"$CLOUD_TYPE"'",
+    "executionType": "RUN_TIME",
+    "policyIds": ["<POLICY_ID>"],
+    "connectorIds": ["<CONNECTOR_ID>"],
+    "resourceResults": ["FAIL"],
+    "resourceSummaryInclude": true
+  }'
+
+# 2) POLL estado hasta "status":"Completed" (Accepted->Processing->Generated->Completed|Failed)
+curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+  -H "Accept: application/json" \
+  "$PLATFORM_URL/cloudview-api/rest/v1/report/assessment/list?reportId=<REPORT_ID>"
+
+# 3) DESCARGAR (CSV o PDF)
+curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+  "$PLATFORM_URL/cloudview-api/rest/v1/report/assessment/<REPORT_ID>/download?reportFormat=csv" \
+  -o "ley21719-assessment-<cliente>-$CLOUD_TYPE.csv"
+
+# (opcional) re-correr el mismo reporte sin recrearlo:
+#   curl -s -X POST ... "$PLATFORM_URL/cloudview-api/rest/v1/report/assessment/<REPORT_ID>/rerun"
+```
+
+Body de `create`: `reportName, format(CSV|PDF), cloudType, executionType(RUN_TIME|BUILD_TIME),
+policyIds[], connectorIds[], tagIds[], resourceResults[](PASS|PASSE|FAIL), resourceSummaryInclude,
+query(QQL opc), startDate, endDate`. **Asíncrono** (`create`→`reportId`→`list` hasta `Completed`→
+`download`). **El reporte se autoborra a los 7 días.**
+
+### B) Mandate Report (posture vs. mandate regulatorio) — AWS/Azure/GCP
+
+La Ley 21.719 **no es un mandate nativo CSPM** → se puentea con un mandate **afín** (ISO 27001 /
+NIST 800-53 / GDPR) como evidencia.
+
+```bash
+# a) descubrir el mandateId afín y las policies soportadas por cloudType
+curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+  -H "Accept: application/json" "$PLATFORM_URL/cloudview-api/rest/v1/reports/mandates"
+curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+  -H "Accept: application/json" \
+  "$PLATFORM_URL/cloudview-api/rest/v1/reports/policies?cloudType=$CLOUD_TYPE"
+
+# b) crear el mandate report (POST)
+curl -s -X POST -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \
+  -H "X-Requested-With: qley21719" -H "Content-Type: application/json" \
+  "$PLATFORM_URL/cloudview-api/rest/v1/reports" \
+  -d '{ "cloudType":"'"$CLOUD_TYPE"'", "type":"<MANDATE_BASED>", "mandateId":"<MANDATE_ID>",
+        "policies":[{"cloudType":"'"$CLOUD_TYPE"'","policyId":"<POLICY_ID>"}],
+        "connectorIds":["<CONNECTOR_ID>"], "format":"PDF",
+        "title":"Ley 21.719 (mandate afín) - <cliente>" }'
+```
+
+> ⚠️ **Verbo a verificar:** la colección Postman v1.23.0.0 marca "Create/Update a Report" como
+> `GET` con body (error de autoría) → casi seguro **POST/PUT**; confirma vs el *CloudView API User
+> Guide* o el tenant. Los de `/report/assessment/*` **sí** son POST (verificado).
+>
+> **OCI:** los mandate reports están documentados para **AWS/Azure/GCP**; para OCI, verificar (puede
+> no estar soportado → usar consola).
+
+**Docs (Qualys):** [Reports](https://docs.qualys.com/en/cloudview/latest/reports/reports.htm) ·
+[Assessment Report](https://docs.qualys.com/en/cloudview/latest/reports/assessment_report.htm) ·
+[Mandate Report](https://docs.qualys.com/en/cloudview/latest/reports/mandate_report.htm)
+
+"""
+
+
+def _cloud_report_section(provider: str, account: str) -> str:
+    """Renderiza la subsección '3b' provider-aware: sustituye PROVIDER/CLOUD_TYPE/SCOPE_ID según el
+    scope leído. Es un HUMAN-GATE: documenta los `curl` (POST=mutación) que corre el CLIENTE; la
+    herramienta nunca los dispara. Sin credenciales reales (placeholders por entorno)."""
+    p = (provider or "").lower().strip()
+    if p in _CLOUD_REPORT_PARAMS:
+        cloud_type, scope_label = _CLOUD_REPORT_PARAMS[p]
+        provider_path = p
+        scope_id = account or f"<{scope_label}>"
+        reports = ("⚠️ VERIFICAR — la API de reportes v1.23 documenta solo AWS/Azure/GCP"
+                   if p == "oci" else "Assessment ✅ · Mandate ✅")
+    else:
+        provider_path = "<aws|azure|gcp|oci>"
+        cloud_type = "<AWS|AZURE|GCP|OCI>"
+        scope_label = "id del scope"
+        scope_id = account or "<SCOPE_ID>"
+        reports = "según provider (AWS/Azure/GCP ✅; OCI ⚠️ verificar)"
+
+    oci_warn = ""
+    if p == "oci":
+        oci_warn = (
+            "> ⚠️ **OCI:** la API de reportes v1.23.0.0 documenta `cloudType` **solo para "
+            "AWS/Azure/GCP**. OCI está soportado en connectors/evaluations (lo que esta herramienta "
+            "ya lee), pero **NO está confirmado en los endpoints de reporte** → verifica contra tu "
+            "tenant; si no está soportado, usa el flujo de **consola** (paso 3).\n\n")
+
+    return (_CLOUD_REPORT_TEMPLATE
+            .replace("__OCI_WARN__", oci_warn)
+            .replace("__PROVIDER__", provider_path)
+            .replace("__CLOUD_TYPE__", cloud_type)
+            .replace("__SCOPE_LABEL__", scope_label)
+            .replace("__SCOPE_ID__", scope_id)
+            .replace("__REPORTS__", reports))
+
+
 def _write_apply_instructions(path: str, spec: dict, provider: str, account: str) -> None:
-    md = f"""# Cómo aplicar el pack cloud-posture (CSPM) — human-gate
+    head = f"""# Cómo aplicar el pack cloud-posture (CSPM) — human-gate
 
 > En cloud NO hay `policy.xml` importable. Este pack es READ-ONLY: la herramienta solo LEE
 > posture (controls + evaluations) y emite trazabilidad. **No muta nada.** El cliente aplica.
@@ -222,13 +385,17 @@ Scope leído: provider=`{provider or '(varios)'}`  account/connector=`{account o
 2. **Crear la Custom Policy en la UI** (no por API por defecto): `Policy > New`, elegir provider/
    executionType, asociar los controles del mapping, y asignar connectors/tags (el scope lo pone
    el cliente). Ref. DESIGN-cloud-posture.md §4.
-3. (Opcional) Generar/descargar un Assessment/Mandate Report desde la consola — su **creación es
-   POST (mutación)**, por eso **la herramienta no lo dispara**; lo hace el cliente.
+3. (Opcional) Generar/descargar un Assessment/Mandate Report **desde la consola** — o por **API**
+   (ver **§3b** abajo). Su **creación es POST (mutación)**, por eso **la herramienta no lo dispara**;
+   lo hace el cliente.
 4. Re-correr esta herramienta (read-only) para regenerar el mapping tras cualquier cambio.
 
-NOTA de alcance: el CSPM valida la CONFIGURACIÓN (cifrado/backup/red); no cifra, no respalda, no
-restaura ni clasifica el dato. Las familias `cifrado` y `disponibilidad` son config-only (gap honesto).
-La Ley 21.719 NO es un mandate nativo CSPM: se puentea vía mandate afín (ISO 27001 / NIST 800-53 / GDPR).
 """
+    tail = (
+        "NOTA de alcance: el CSPM valida la CONFIGURACIÓN (cifrado/backup/red); no cifra, no respalda, no\n"
+        "restaura ni clasifica el dato. Las familias `cifrado` y `disponibilidad` son config-only (gap honesto).\n"
+        "La Ley 21.719 NO es un mandate nativo CSPM: se puentea vía mandate afín (ISO 27001 / NIST 800-53 / GDPR).\n"
+    )
+    md = head + _cloud_report_section(provider, account) + tail
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(md)

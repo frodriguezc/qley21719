@@ -25,7 +25,7 @@ gh pr merge --squash --delete-branch
 
 ## Reglas de la protección (perfil "Medio")
 
-- **Se exige PR** para cambiar `main` (0 aprobaciones — proyecto solo-dev, podés auto-mergear tu propio PR).
+- **Se exige PR** para cambiar `main` (0 aprobaciones — proyecto solo-dev, puedes auto-mergear tu propio PR).
 - **Se exigen los checks** `tests (3.11)` y `tests (3.12)` en verde.
 - **`strict`**: la rama del PR debe estar al día con `main` antes de mergear.
 - **El admin (dueño del repo) puede saltear** la protección si hace falta; el flujo por defecto es PR.
