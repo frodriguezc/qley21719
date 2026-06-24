@@ -22,11 +22,13 @@ CAVEATS (mapping/platform_coverage.yaml `cspm_api.caveats`):
 from __future__ import annotations
 
 import re
+import sys
 import time
 
 import requests
 
-from .client import PODS, QualysReadOnlyError, _read_dotenv
+from .client import (PODS, QualysReadOnlyError, _read_dotenv,
+                     _retry_after_seconds, _throttle_note)
 
 CV_BASE = "/cloudview-api/rest/v1"
 
@@ -85,13 +87,11 @@ class CloudViewClient:
         resp = self.sess.get(url, params=params, timeout=self.timeout)
         self.call_count += 1
         if resp.status_code in (409, 429) and _retry < _MAX_RETRY:
-            wait = 0
-            for h in ("X-RateLimit-ToWait-Sec", "Retry-After"):
-                try:
-                    wait = max(wait, int(resp.headers.get(h, "0") or 0))
-                except ValueError:
-                    pass
-            time.sleep(min(60, wait or 15 * (_retry + 1)))
+            wait = _retry_after_seconds(resp, _retry)
+            if self.debug:
+                print(f"[cloudview] {_throttle_note(resp)} -> sleep {wait}s "
+                      f"(retry {_retry + 1}/{_MAX_RETRY})", file=sys.stderr)
+            time.sleep(wait)
             return self._request(url, params, _retry + 1)
         return resp
 

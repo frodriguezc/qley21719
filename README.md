@@ -44,7 +44,9 @@ Variables opcionales: `MAX_HOSTS=5000` (tope de hosts a barrer), `PACK_NAME="Ley
 | 0 | `0-modulos.md` | Qué módulos tiene el tenant (**POL** / **TC**) y, si falta alguno, lo indica. |
 | 1 | `1-CIS-a-importar-en-POL.txt` | Los **benchmarks CIS a cargar** en Policy Compliance: `[A]` por SO de la flota · `[B]` por software · `[C]` a verificar. |
 | 2 | `2-policy-xml/{base,sensible}/policy.xml` | La **política importable** de la Ley, en **dos niveles** (ver abajo) + `import-instructions.md`. |
-| 2 | `2-policy-xml/subir.sh` | El comando de import — **lo corres tú** (human-gate). |
+| 2 | `2-policy-xml/subir.sh` | El comando de import como **política nueva** — **lo corres tú** (human-gate). |
+| 2 | `2-policy-xml/subir-merge.sh` | Alternativa: **merge in-place** sobre una política Ley ya afinada, con **preview** primero (no guarda nada) — **lo corres tú**. Sobrescribe tu tuning de los controles comunes; si solo querés sumar cobertura, usá `subir.sh`. |
+| 2 | `2-policy-xml/drift.md` | (con `--drift`) Diff **read-only** entre la política Ley ya importada y el pack regenerado: qué CIDs faltan, cuáles sobran y cuáles cambiaron. |
 | 3 | `3-cloud-posture-CSPM/<proveedor>/<cuenta>/` | Mapeo de postura cloud por cuenta: `mapping.csv` (control → familia → artículo, PASS/FAIL), `fails.csv`, `gaps.md`. |
 
 > `deliverables/` lleva el `policy.xml` (valores CIS endurecidos = **contenido licenciado**) y datos del
@@ -95,6 +97,71 @@ lo ejecutas tú**, a sabiendas, por la UI o con `subir.sh`. La herramienta nunca
 > es read-only de todos modos (no puede mutar), pero conviene que la credencial también lo sea: así el
 > propio permiso del usuario garantiza que no se puede tocar nada, sin depender del software. Solo
 > necesita **acceso de lectura** a Policy Compliance, al inventario de assets y a TotalCloud/CloudView.
+
+---
+
+## Cómo funciona
+
+Es **Python puro y sin estado**: lee tus credenciales del entorno, abre una sesión HTTP contra la
+**API de Qualys** y encadena llamadas de **solo lectura** hasta producir los `deliverables/`. No hay
+base de datos, ni demonio, ni servicio externo — cada corrida es independiente.
+
+### 1. Credenciales y conexión
+
+`qualys_client.from_env()` resuelve las credenciales con esta precedencia:
+
+```
+variables de entorno  →  .env (gitignored)  →  config.yaml (gitignored)
+QUALYS_POD · QUALYS_API_USER · QUALYS_API_PASSWORD
+```
+
+El **POD** se traduce a la URL del API server (`US03 → https://qualysapi.qg3.apps.qualys.com`, etc.) y
+se construye un `QualysClient` con **HTTP Basic Auth** + el header `X-Requested-With` que exige Qualys.
+El password **nunca** se loguea.
+
+### 2. Pipeline Policy Compliance (`scripts/tenant_coverage_pack.py`)
+
+```
+from_env() ─► QualysClient(POD, user, pass)
+   │
+   ├─ 1. Barrer flota      GET  /api/5.0/fo/asset/host/?action=list        (pagina por id_min)
+   ├─ 2. Inferir software  POST /qps/rest/2.0/search/am/hostasset          (pagina por startFromId)
+   ├─ 3. Listar policies   GET  /api/4.0/fo/compliance/policy/?action=list
+   │
+   ├─ 4. reconcile()       cruza flota + software + policies  vs  mapping/cis_catalog.yaml
+   │
+   └─ 5. generate_pack()   por cada benchmark CIS importado que aplica:
+          ├─ harvest       GET /api/4.0/fo/compliance/policy/?action=export&id=<pid>   (CONTROL+EVALUATE)
+          ├─ categorías    GET /api/4.0/fo/compliance/control/?action=list&ids=...
+          ├─ classify      CID → familia legal de la Ley   (mapping/ley21719.yaml)
+          ├─ assemble      arma el <POLICY> import-XML (5 familias · 2 niveles)
+          ├─ validate      well-formed + estructura + cada control con EVALUATE
+          └─ emit          policy.xml · faltantes.txt · subir.sh · mapping.csv · gaps.md
+```
+
+La salida va a `artifacts/<pack>/<cliente>/<run_id_UTC>/` (+ symlink `latest`), con un `run.log` de la
+corrida (sin credenciales). **Nada se importa:** `subir.sh` / `subir-merge.sh` los corres tú (human-gate).
+
+### 3. Pipeline Cloud / CSPM (`scripts/cloud_posture_pack.py`)
+
+Motor separado, mismo patrón read-only, con `CloudViewClient` (REST JSON, **allow-list de solo GET**):
+
+```
+GET /cloudview-api/rest/v1/controls/metadata/list             metadata de controles CSPM
+GET /cloudview-api/rest/v1/<aws|azure|gcp|oci>/connectors     auto-descubre cuentas
+GET /cloudview-api/rest/v1/<prov>/evaluations/<cuenta>        postura PASS/FAIL (pagina estilo Spring)
+   └─► classify por keywords (mapping/ley21719-cloud.yaml) ─► mapping.csv · fails.csv · gaps.md
+```
+
+### 4. Caché y resiliencia
+
+- **Caché de harvest:** tras una corrida online, los controles cosechados quedan en `artifacts/.../cache/`
+  (gitignored). Con `--refresh` re-cosecha; sin él lee del caché y **no toca el tenant** (generación offline).
+- **Rate limiting:** ante `429/409` el cliente respeta el `X-RateLimit-ToWait-Sec` / `Retry-After` que pide
+  Qualys (hasta 300 s) y reintenta; las listas grandes se **paginan** por cursor.
+- **Guard read-only horneado:** FO solo acepta `list/fetch/count/export`; QPS solo `/search/` y `/count/`;
+  CSPM solo los GET enumerados. Cualquier otra cosa levanta `QualysReadOnlyError` **antes** de tocar la red
+  (ver `tests/test_readonly_guards.py`).
 
 ---
 

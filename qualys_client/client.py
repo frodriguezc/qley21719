@@ -13,6 +13,7 @@ rate/concurrency (HTTP 429/409), honrando los headers de espera que devuelve Qua
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
@@ -41,10 +42,43 @@ PODS = {
 READ_FO_ACTIONS = {"list", "fetch", "count", "list_id_range", "export"}
 
 _MAX_RETRY = 5
+# Techo de espera ante throttle. Honramos el wait que pide Qualys (X-RateLimit-ToWait-Sec /
+# Retry-After) hasta este tope: si el server pide 300s, dormimos 300s (no 60) — pero nunca un
+# valor arbitrario que el server pudiera devolver. Subreporte previo: el cap de 60s agotaba los
+# reintentos y abortaba un sweep que Qualys solo quería diferir.
+_MAX_BACKOFF_SEC = 300
 
 
 class QualysReadOnlyError(RuntimeError):
     """Se intentó una operación que NO es de lectura (bloqueada por diseño)."""
+
+
+def _retry_after_seconds(resp: requests.Response, retry: int) -> int:
+    """Segundos a esperar ante 429/409. Lee el wait que pide Qualys (X-RateLimit-ToWait-Sec /
+    Retry-After) y lo acota a [.., _MAX_BACKOFF_SEC]; si el server no lo dice, backoff lineal."""
+    wait = 0
+    for h in ("X-RateLimit-ToWait-Sec", "Retry-After"):
+        try:
+            wait = max(wait, int(resp.headers.get(h, "0") or 0))
+        except (ValueError, TypeError):
+            pass
+    return min(_MAX_BACKOFF_SEC, wait or 15 * (retry + 1))
+
+
+def _throttle_note(resp: requests.Response) -> str:
+    """Una línea diagnóstica (sin credenciales): distingue saturación de CONCURRENCIA (409, o 429
+    con running>=limit) de rate puro, leyendo los headers públicos de Qualys. Solo para --debug."""
+    h = resp.headers
+    running, limit = h.get("X-Concurrency-Limit-Running"), h.get("X-Concurrency-Limit-Limit")
+    remaining = h.get("X-RateLimit-Remaining")
+    kind = "concurrency" if resp.status_code == 409 else "rate"
+    try:
+        if running is not None and limit is not None and int(running) >= int(limit):
+            kind = "concurrency"
+    except (ValueError, TypeError):
+        pass
+    return (f"throttle({kind}) http={resp.status_code} "
+            f"concurrency={running or '?'}/{limit or '?'} rate_remaining={remaining or '?'}")
 
 
 class QualysClient:
@@ -71,13 +105,11 @@ class QualysClient:
                                  headers=headers, timeout=self.timeout)
         self.call_count += 1
         if resp.status_code in (409, 429) and _retry < _MAX_RETRY:
-            wait = 0
-            for h in ("X-RateLimit-ToWait-Sec", "Retry-After"):
-                try:
-                    wait = max(wait, int(resp.headers.get(h, "0") or 0))
-                except ValueError:
-                    pass
-            time.sleep(min(60, wait or 15 * (_retry + 1)))
+            wait = _retry_after_seconds(resp, _retry)
+            if self.debug:
+                print(f"[qualys] {_throttle_note(resp)} -> sleep {wait}s "
+                      f"(retry {_retry + 1}/{_MAX_RETRY})", file=sys.stderr)
+            time.sleep(wait)
             return self._request(method, url, params, data, headers, _retry + 1)
         return resp
 
@@ -94,8 +126,10 @@ class QualysClient:
 
     # -- QPS REST (read-only: solo /search o /count) ------------------------- #
     @staticmethod
-    def _qps_body(limit: int | None = None, criteria: list[dict] | None = None) -> str:
-        """Arma el body XML de una búsqueda/conteo QPS (schema público ServiceRequest)."""
+    def _qps_body(limit: int | None = None, criteria: list[dict] | None = None,
+                  start_from_id: int | None = None) -> str:
+        """Arma el body XML de una búsqueda/conteo QPS (schema público ServiceRequest). `start_from_id`
+        emite <startFromId> dentro de <preferences> para paginar por cursor (id ascendente)."""
         parts = []
         if criteria:
             crits = "".join(
@@ -105,17 +139,23 @@ class QualysClient:
             )
             if crits:
                 parts.append(f"<filters>{crits}</filters>")
+        prefs = []
+        if start_from_id is not None:
+            prefs.append(f"<startFromId>{int(start_from_id)}</startFromId>")
         if limit:
-            parts.append(f"<preferences><limitResults>{int(limit)}</limitResults></preferences>")
+            prefs.append(f"<limitResults>{int(limit)}</limitResults>")
+        if prefs:
+            parts.append(f"<preferences>{''.join(prefs)}</preferences>")
         return f"<ServiceRequest>{''.join(parts)}</ServiceRequest>" if parts else ""
 
     def qps_search(self, path: str, limit: int | None = None,
                    payload_xml: str | None = None,
-                   criteria: list[dict] | None = None) -> tuple[int, str]:
+                   criteria: list[dict] | None = None,
+                   start_from_id: int | None = None) -> tuple[int, str]:
         if "/search/" not in path and "/count/" not in path:
             raise QualysReadOnlyError("QPS read-only: solo se permiten paths con /search/ o /count/")
         if payload_xml is None:
-            payload_xml = self._qps_body(limit=limit, criteria=criteria)
+            payload_xml = self._qps_body(limit=limit, criteria=criteria, start_from_id=start_from_id)
         r = self._request("POST", self.server + path, data=payload_xml,
                           headers={"Content-Type": "text/xml"})
         return r.status_code, r.text
