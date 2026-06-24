@@ -154,6 +154,59 @@ def test_throttle_note_distinguishes_concurrency():
     assert "rate" in note_rate
 
 
+# --- on_throttle: persistencia del backoff (p.ej. run.log), sin dormir de verdad ---------- #
+def _client_with_fake_session(responses):
+    """Cliente cuyo `sess.request` devuelve `responses` en orden y cuyo `time.sleep` no duerme.
+    Devuelve (cliente, restore); llamar restore() para deshacer el patch de sleep."""
+    c = QualysClient("US03", "alice", "s3cr3t")
+    seq = list(responses)
+    c.sess.request = lambda *a, **k: seq.pop(0)  # type: ignore[assignment]
+    orig_sleep = qc.time.sleep
+    qc.time.sleep = lambda _s: None
+    return c, (lambda: setattr(qc.time, "sleep", orig_sleep))
+
+
+def test_on_throttle_fires_and_is_secret_safe():
+    # 429 (server pide 7s) -> backoff -> 200: on_throttle recibe UNA linea secret-safe.
+    c, restore = _client_with_fake_session(
+        [_Resp(429, {"X-RateLimit-ToWait-Sec": "7"}), _Resp(200)])
+    notes = []
+    c.on_throttle = notes.append
+    try:
+        resp = c._request("GET", "https://x/api")
+    finally:
+        restore()
+    assert resp.status_code == 200
+    assert c.call_count == 2                       # 429 + 200 (ambas contadas)
+    assert len(notes) == 1, notes
+    assert "sleep 7s" in notes[0] and "retry 1/" in notes[0]
+    assert "s3cr3t" not in notes[0] and "alice" not in notes[0]  # jamas credenciales
+
+
+def test_on_throttle_absent_does_not_crash():
+    # Sin sink (default None) un throttle no debe romper el sweep read-only.
+    c, restore = _client_with_fake_session([_Resp(409), _Resp(200)])
+    assert c.on_throttle is None
+    try:
+        resp = c._request("GET", "https://x/api")
+    finally:
+        restore()
+    assert resp.status_code == 200
+
+
+def test_on_throttle_broken_sink_is_swallowed():
+    # Un sink que levanta excepcion NO debe abortar el request (el sweep read-only sigue).
+    c, restore = _client_with_fake_session([_Resp(429, {"Retry-After": "1"}), _Resp(200)])
+    def _boom(_note):
+        raise RuntimeError("sink roto")
+    c.on_throttle = _boom
+    try:
+        resp = c._request("GET", "https://x/api")
+    finally:
+        restore()
+    assert resp.status_code == 200
+
+
 # --- Validacion de POD ----------------------------------------------------- #
 def test_unknown_pod_raises():
     try:

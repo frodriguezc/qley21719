@@ -67,7 +67,8 @@ def _retry_after_seconds(resp: requests.Response, retry: int) -> int:
 
 def _throttle_note(resp: requests.Response) -> str:
     """Una línea diagnóstica (sin credenciales): distingue saturación de CONCURRENCIA (409, o 429
-    con running>=limit) de rate puro, leyendo los headers públicos de Qualys. Solo para --debug."""
+    con running>=limit) de rate puro, leyendo los headers públicos de Qualys. Para --debug (stderr)
+    y/o el sink on_throttle (p.ej. run.log)."""
     h = resp.headers
     running, limit = h.get("X-Concurrency-Limit-Running"), h.get("X-Concurrency-Limit-Limit")
     remaining = h.get("X-RateLimit-Remaining")
@@ -94,6 +95,7 @@ class QualysClient:
         self.timeout = timeout
         self.debug = debug
         self.call_count = 0
+        self.on_throttle = None  # sink opcional para eventos de throttle (p.ej. logger run.log); secret-safe
         self.sess = requests.Session()
         self.sess.auth = (user, password)
         self.sess.headers.update({"X-Requested-With": "qley21719 (read-only)"})
@@ -106,9 +108,15 @@ class QualysClient:
         self.call_count += 1
         if resp.status_code in (409, 429) and _retry < _MAX_RETRY:
             wait = _retry_after_seconds(resp, _retry)
-            if self.debug:
-                print(f"[qualys] {_throttle_note(resp)} -> sleep {wait}s "
-                      f"(retry {_retry + 1}/{_MAX_RETRY})", file=sys.stderr)
+            note = (f"{_throttle_note(resp)} -> sleep {wait}s "
+                    f"(retry {_retry + 1}/{_MAX_RETRY})")
+            if self.debug:                       # diagnóstico en vivo a stderr (opt-in --debug)
+                print(f"[qualys] {note}", file=sys.stderr)
+            if self.on_throttle:                 # persistencia opcional (p.ej. run.log), aun sin --debug
+                try:
+                    self.on_throttle(note)
+                except Exception:                # un sink roto jamás debe abortar un sweep read-only
+                    pass
             time.sleep(wait)
             return self._request(method, url, params, data, headers, _retry + 1)
         return resp

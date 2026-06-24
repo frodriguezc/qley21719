@@ -158,7 +158,11 @@ GET /cloudview-api/rest/v1/<prov>/evaluations/<cuenta>        postura PASS/FAIL 
 - **Caché de harvest:** tras una corrida online, los controles cosechados quedan en `artifacts/.../cache/`
   (gitignored). Con `--refresh` re-cosecha; sin él lee del caché y **no toca el tenant** (generación offline).
 - **Rate limiting:** ante `429/409` el cliente respeta el `X-RateLimit-ToWait-Sec` / `Retry-After` que pide
-  Qualys (hasta 300 s) y reintenta; las listas grandes se **paginan** por cursor.
+  Qualys (hasta 300 s) y reintenta; las listas grandes se **paginan** por cursor. Cada backoff queda en el
+  `run.log` (UTC, sin credenciales) **aunque no uses `--debug`**; con `--debug` además sale a **stderr** en
+  vivo (concurrency vs rate, headers, segundos de espera) — así un throttle largo ya no parece un cuelgue.
+- **Progreso del harvest:** la cosecha live emite un **latido por benchmark** (`cosechando N/total: <CIS>`)
+  a stdout y al `run.log`; exportar benchmarks grandes es la parte lenta del pack.
 - **Guard read-only horneado:** FO solo acepta `list/fetch/count/export`; QPS solo `/search/` y `/count/`;
   CSPM solo los GET enumerados. Cualquier otra cosa levanta `QualysReadOnlyError` **antes** de tocar la red
   (ver `tests/test_readonly_guards.py`).
@@ -183,7 +187,8 @@ El orquestador llama a estos scripts; también puedes correrlos por separado:
 .venv/bin/python scripts/cloud_posture_pack.py --provider all                    # motor CSPM (auto-descubre cuentas)
 ```
 
-Flags útiles de POL: `--level base|sensible`, `--max-hosts N`, `--out DIR`. De CSPM:
+Flags útiles de POL: `--level base|sensible`, `--max-hosts N`, `--out DIR`, `--debug` (diagnóstico de
+throttle/backoff a stderr; el backoff se loguea al `run.log` igual sin el flag). De CSPM:
 `--provider aws|azure|gcp|oci`, `--account <id>`, `--fixture sample.json` (correr sin tenant).
 Credenciales: por entorno, por `.env`, o por `--pod/--user/--password`.
 
