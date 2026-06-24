@@ -84,7 +84,7 @@ tags/groups). Para sumar tecnologías: importar los benchmarks de `faltantes.txt
     para regenerar la matriz CSV (derivada de los YAML — fuente única; no editar el CSV a mano).
 - La **clasificación** ley→familia vive en `mapping/ley21719.yaml` (`families[].match` + `classification`);
   es agnóstica (un control nuevo cae en `default_family` y se lista en `gaps.md` para revisión).
-- No commitear credenciales ni salida (`artifacts/`). Verificá con `git status` antes de pushear.
+- No commitear credenciales ni salida (`artifacts/`). Verifica con `git status` antes de pushear.
 
 ## 6. Licencia
 

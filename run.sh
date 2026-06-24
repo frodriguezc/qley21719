@@ -56,7 +56,7 @@ ts "Python: $(python3 --version 2>&1)"
 hb "Instalando requirements" "$PY" -m pip install -q --disable-pip-version-check -r "$HERE/requirements.txt"
 
 if [ ! -f "$HERE/.env" ] && [ -z "${QUALYS_API_USER:-}" ]; then
-  die "Faltan credenciales. Creá .env (cp .env.example .env) o exportá QUALYS_POD/QUALYS_API_USER/QUALYS_API_PASSWORD."
+  die "Faltan credenciales. Crea .env (cp .env.example .env) o exporta QUALYS_POD/QUALYS_API_USER/QUALYS_API_PASSWORD."
 fi
 
 rm -rf "$DELIV"; mkdir -p "$DELIV"

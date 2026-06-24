@@ -67,7 +67,7 @@ class CloudViewClient:
         fo = PODS.get((pod or "").upper())
         base = server or (cspm_server(fo) if fo else None)
         if not base:
-            raise ValueError(f"POD desconocido: {pod!r}. Conocidos: {sorted(PODS)} (o pasá `server=`).")
+            raise ValueError(f"POD desconocido: {pod!r}. Conocidos: {sorted(PODS)} (o pasa `server=`).")
         self.pod = (pod or "").upper()
         self.server = base.rstrip("/")
         self.timeout = timeout

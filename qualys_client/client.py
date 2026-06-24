@@ -20,7 +20,7 @@ from xml.sax.saxutils import escape, quoteattr
 import requests
 
 # Plataformas/PODs de Qualys: clave (identificador del POD) -> API server URL pública.
-# Fuente: "Qualys Platform Identification / API Server URLs" (doc pública de Qualys). Verificá el
+# Fuente: "Qualys Platform Identification / API Server URLs" (doc pública de Qualys). Verifica el
 # tuyo en tu consola si tu POD no está acá.
 PODS = {
     "US01": "https://qualysapi.qualys.com",

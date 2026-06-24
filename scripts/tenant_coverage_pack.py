@@ -161,7 +161,7 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, os_counts: Counter, t
         for s in present_sources:
             L.append(f"  [{s['id']}] {s['title']}")
     else:
-        L.append("  (ninguno — el policy.xml no se generó: importá al menos un benchmark CIS)")
+        L.append("  (ninguno — el policy.xml no se generó: importa al menos un benchmark CIS)")
 
     detected_missing = [r for r in rec["rows"]
                         if r["present_in_fleet"] and not r["imported"] and r["kind"] == "os"]
