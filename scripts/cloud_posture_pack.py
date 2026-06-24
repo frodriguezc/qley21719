@@ -27,6 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cloud_pack.generator import build_pack, load_spec, parse_controls, parse_evaluations  # noqa: E402
+from scripts._runtime import (  # noqa: E402
+    resolve_run_dir, preflight_writable, link_latest, setup_run_log)
 
 # Campos del connector con el id de cuenta, por proveedor (verificado live AWS/GCP).
 _ACCOUNT_KEYS = {
@@ -113,6 +115,15 @@ def main(argv=None) -> int:
 
     spec = load_spec(args.spec)
 
+    base = Path(args.out)
+    preflight_writable(base)                       # falla rápido ANTES de tocar el tenant
+    run_dir, run_id = resolve_run_dir(base)        # artifacts/cloud-pack/<run_id>/<provider>/<account>
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out_base = str(run_dir)
+    log = setup_run_log(run_dir)
+    log.info(f"start run_id={run_id} mode={'fixture' if args.fixture else 'live'} "
+             f"provider={args.provider} account={args.account or 'auto'}")
+
     if args.fixture:
         blob = json.loads(Path(args.fixture).read_text(encoding="utf-8"))
         evals = blob.get("evaluations", [])
@@ -121,8 +132,10 @@ def main(argv=None) -> int:
         posture = parse_evaluations(evals)
         prov = args.provider if args.provider != "all" else "aws"
         acct = args.account or "fixture"
-        out_dir = str(Path(args.out) / prov / acct)
+        out_dir = str(Path(out_base) / prov / acct)
         stats = build_pack(controls, posture, spec, out_dir, provider=prov, account=acct)
+        link_latest(run_dir)
+        log.info(f"fixture done controls={stats['controls']} fails={stats['fails']} out={out_dir}")
         print(f"[fixture] {stats['controls']} ctrl · {stats['fails']} FAIL -> {out_dir}/")
         return 0
 
@@ -143,14 +156,20 @@ def main(argv=None) -> int:
         accounts = [args.account] if args.account else _discover_accounts(client, prov)
         if not accounts:
             print(f"  [{prov}] sin connectors/cuentas — skip", flush=True)
+            log.info(f"{prov} skip (sin connectors/cuentas)")
             continue
         for acct in accounts:
             try:
-                _run_one(client, spec, prov, acct, args.out)
+                r = _run_one(client, spec, prov, acct, out_base)
+                log.info(f"{prov}/{acct} controls={r['controls']} fails={r['fails']} gaps={r['gaps']}")
                 ran += 1
             except SystemExit as e:
                 print(f"  [{prov}/{acct}] ERROR: {e}", flush=True)
-    print(f"[cloud] {ran} cuenta(s) procesada(s) · {client.call_count} GETs")
+                log.info(f"{prov}/{acct} ERROR {e}")
+    link_latest(run_dir)
+    log.info(f"done accounts={ran} calls={client.call_count} out={out_base}")
+    print(f"[cloud] {ran} cuenta(s) procesada(s) · {client.call_count} GETs -> {out_base}/"
+          f" (también: {run_dir.parent / 'latest'})")
     return 0
 
 

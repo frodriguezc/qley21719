@@ -64,7 +64,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # solo requ
 export QUALYS_POD=US03 QUALYS_API_USER=... QUALYS_API_PASSWORD=...    # API user de SOLO LECTURA
 .venv/bin/python scripts/tenant_coverage_pack.py --name "Ley 21.719 - <cliente>"
 ```
-Salida en `artifacts/tenant-pack/`: `{base,sensible}/policy.xml`, `faltantes.txt`, `subir.sh`, trazabilidad.
+Salida en `artifacts/tenant-pack/<cliente>/<run_id_UTC>/` (con symlink `…/<cliente>/latest`):
+`{base,sensible}/policy.xml`, `faltantes.txt`, `subir.sh`, `run.log` (traza sin credenciales), trazabilidad.
 El cliente importa (UI: Policies > New > Import from XML File, o `bash subir.sh`) y asigna **scope** (asset
 tags/groups). Para sumar tecnologías: importar los benchmarks de `faltantes.txt` desde la librería y
 **re-correr** la herramienta. Ver `README.md` (cara al cliente) y `compliance_pack/README.md`.
