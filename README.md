@@ -1,5 +1,7 @@
 # Ley 21.719 Deploy Assistant (Qualys)
 
+[![tests](https://github.com/frodriguezc/qley21719/actions/workflows/tests.yml/badge.svg)](https://github.com/frodriguezc/qley21719/actions/workflows/tests.yml)
+
 > Asistente **autónomo y READ-ONLY** para desplegar los **controles técnicos** de la **Ley 21.719**
 > de Chile (protección de datos personales) sobre una suscripción de **Qualys**. Evalúa tu tenant y
 > arma, listo para subir, el mapeo de la ley a la plataforma. **No muta nada**: el import lo ejecutas tú.
@@ -89,8 +91,10 @@ Los clientes HTTP incluidos **bloquean estructuralmente** cualquier escritura: F
 `list/fetch/count/export`; CSPM es **allow-list-only** (solo GETs enumerados). **El import (la mutación)
 lo ejecutas tú**, a sabiendas, por la UI o con `subir.sh`. La herramienta nunca modifica tu suscripción.
 
-> Recomendado: usa un **API user de solo lectura** (mínimo privilegio). La herramienta es read-only de
-> todos modos, pero conviene que la credencial también lo sea.
+> **Recomendado: usa un API user con rol de solo lectura (Reader / mínimo privilegio).** La herramienta
+> es read-only de todos modos (no puede mutar), pero conviene que la credencial también lo sea: así el
+> propio permiso del usuario garantiza que no se puede tocar nada, sin depender del software. Solo
+> necesita **acceso de lectura** a Policy Compliance, al inventario de assets y a TotalCloud/CloudView.
 
 ---
 
@@ -129,6 +133,11 @@ Library** y **vuelve a correr** la herramienta (las detecta y las suma al `polic
 
 **Cloud (CSPM):** no hay `policy.xml`. Sigue el `apply-instructions.md` de cada cuenta: creas la Custom
 Policy por la UI (`Policy > New`) asociando los controles del `mapping.csv` y asignas connectors/tags.
+
+> **Clasificación cloud (agnóstica):** un control CSPM que no matchea ninguna familia específica cae en
+> el catch-all `hardening` y queda **listado en `gaps.md`** para revisión — la herramienta no inventa
+> familia. Es por diseño, no un bug: cuando CIS agrega controles nuevos, van a aparecer ahí. Para afinar
+> el mapeo, agrega keywords a `mapping/ley21719-cloud.yaml` (sección `classification`) y vuelve a correr.
 
 ---
 
