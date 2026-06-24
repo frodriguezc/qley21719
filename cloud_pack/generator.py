@@ -324,7 +324,7 @@ curl -s -X POST -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \
 ```
 
 > ⚠️ **Verbo a verificar:** la colección Postman v1.23.0.0 marca "Create/Update a Report" como
-> `GET` con body (error de autoría) → casi seguro **POST/PUT**; confirmá vs el *CloudView API User
+> `GET` con body (error de autoría) → casi seguro **POST/PUT**; confirma vs el *CloudView API User
 > Guide* o el tenant. Los de `/report/assessment/*` **sí** son POST (verificado).
 >
 > **OCI:** los mandate reports están documentados para **AWS/Azure/GCP**; para OCI, verificar (puede
@@ -360,8 +360,8 @@ def _cloud_report_section(provider: str, account: str) -> str:
         oci_warn = (
             "> ⚠️ **OCI:** la API de reportes v1.23.0.0 documenta `cloudType` **solo para "
             "AWS/Azure/GCP**. OCI está soportado en connectors/evaluations (lo que esta herramienta "
-            "ya lee), pero **NO está confirmado en los endpoints de reporte** → verificá contra tu "
-            "tenant; si no está soportado, usá el flujo de **consola** (paso 3).\n\n")
+            "ya lee), pero **NO está confirmado en los endpoints de reporte** → verifica contra tu "
+            "tenant; si no está soportado, usa el flujo de **consola** (paso 3).\n\n")
 
     return (_CLOUD_REPORT_TEMPLATE
             .replace("__OCI_WARN__", oci_warn)

@@ -188,7 +188,7 @@ def test_apply_instructions_report_api_section_oci_caveat():
         md = (Path(d) / "apply-instructions.md").read_text(encoding="utf-8")
     assert "PROVIDER=oci CLOUD_TYPE=OCI" in md
     assert "solo para AWS/Azure/GCP" in md                      # callout de caveat OCI
-    assert "usá el flujo de **consola**" in md
+    assert "usa el flujo de **consola**" in md
 
 
 def _run():

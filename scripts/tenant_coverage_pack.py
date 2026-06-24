@@ -276,13 +276,13 @@ def _write_subir_merge_sh(path: Path, server: str, levels: dict, name: str,
         "#",
         "# OJO: action=merge&update_existing_controls=1 SOBREESCRIBE en la policy destino los controles",
         "# comunes (status/criticidad/valores). Tus EXCEPCIONES y valores ajustados de esos CIDs se",
-        "# pierden. Por eso el PASO 1 es un preview_merge=1 (no guarda nada): revisá el diff primero.",
-        "# Para SUMAR cobertura sin tocar tu tuning, preferí re-importar como policy nueva (subir.sh).",
+        "# pierden. Por eso el PASO 1 es un preview_merge=1 (no guarda nada): revisa el diff primero.",
+        "# Para SUMAR cobertura sin tocar tu tuning, prefiere re-importar como policy nueva (subir.sh).",
         "set -euo pipefail", ""]
     if existing_id:
         lines += [f'POLICY_ID="{existing_id}"   # policy Ley detectada en el tenant', ""]
     else:
-        lines.append("# No se detectó UNA sola policy Ley en el tenant. Completá el id a mano:")
+        lines.append("# No se detectó UNA sola policy Ley en el tenant. Completa el id a mano:")
         for pid, title in candidates:
             lines.append(f"#   candidato id={pid}  title={title!r}")
         lines += ['POLICY_ID="<EXISTING_POLICY_ID>"   # <-- COMPLETAR', ""]
@@ -291,7 +291,7 @@ def _write_subir_merge_sh(path: Path, server: str, levels: dict, name: str,
         url = f"{base}/api/4.0/fo/compliance/policy/?action=merge&id=$POLICY_ID&update_existing_controls=1"
         lines += [
             f'# --- nivel {lid} ({lv.get("included", "?")} controles) ---',
-            "# PASO 1 — PREVIEW (no guarda nada): revisá qué cambiaría.",
+            "# PASO 1 — PREVIEW (no guarda nada): revisa qué cambiaría.",
             'curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
             '     -H "X-Requested-With: tenant-coverage-pack" \\',
             '     -H "Content-Type: text/xml" \\',
@@ -428,7 +428,7 @@ def _emit_drift(out: Path, client, policies, title_by_id, result, args, log) -> 
             "Sin policy Ley previa en el tenant — nada que diferenciar. "
             "(Tras importar `subir.sh` una primera vez, una próxima corrida con `--drift` la comparará.)\n"
             if not cand else
-            "Varias policies candidatas; re-corré con `--drift-policy-id <id>`:\n\n"
+            "Varias policies candidatas; re-corre con `--drift-policy-id <id>`:\n\n"
             + "".join(f"- `{pid}`  {ti}\n" for pid, ti in cand)))
         (out / "drift.md").write_text(msg, encoding="utf-8")
         log.info(f"drift candidates={len(cand)} (no único) -> drift.md informativo")
