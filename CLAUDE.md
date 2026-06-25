@@ -41,8 +41,12 @@ scripts/verify_tenant.py          [CSPM] sonda READ-ONLY del tenant (rol Reader 
        build_platform_matrix.py   genera ley21719_platform_coverage_matrix.csv desde platform_coverage.yaml.
        platform_coverage.yaml     mapeo Ley -> TODOS los módulos Qualys (24 obligaciones × 12 módulos + grounding). Posicionamiento, NO contrato.
 ```
-Las matrices CSV son DERIVADAS (no editar a mano: regenerar con su builder). El motor CSPM está
-construido pero NO probado contra un tenant live (parsers defensivos); ver DESIGN-cloud-posture.md §7.
+Las matrices CSV son DERIVADAS (no editar a mano: regenerar con su builder). Motor CSPM: la **auth
+y la detección** se verificaron contra un tenant live (jun-2026) — va por el **API Gateway + JWT**
+(`gateway.<pod>`, `POST /auth` → `Bearer`), NO Basic contra `qualysguard` (eso daba 401 en un tenant
+real). El **harvest con connectors** (controls/metadata + evaluations) sigue sin verificar live (el
+tenant de prueba tenía 0 connectors y al API user le falta el permiso de control-library); parsers
+defensivos. Ver DESIGN-cloud-posture.md §7.
 
 ## 3. Guardrails (INVARIANTES — no romper)
 

@@ -19,11 +19,14 @@ class FakeFO:
 
 
 class FakeCV:
-    def __init__(self, code, text, server="https://qualysguard.qg3.apps.qualys.com"):
+    def __init__(self, code, text, server="https://gateway.qg3.apps.qualys.com"):
         self._r = (code, text)
         self.server = server
 
-    def list_controls(self, params):
+    def list_connectors(self, provider, params=None):
+        return self._r
+
+    def list_controls(self, params=None):
         return self._r
 
 
