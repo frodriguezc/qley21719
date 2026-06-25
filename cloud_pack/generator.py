@@ -210,9 +210,11 @@ def _write_gaps(path: str, gaps: list[dict], spec: dict) -> None:
 
 
 # Parámetros de reporte CSPM por provider: (cloudType del body, etiqueta del identificador de
-# scope). La API de reportes (Postman v1.23.0.0 / CloudView API User Guide) documenta `cloudType`
-# SOLO para AWS/Azure/GCP; OCI queda como "verificar" (se soporta en connectors/evaluations, no
-# confirmado en reportes). Fuente: docs.qualys.com/en/cloudview/latest/reports/.
+# scope). VERIFICADO (jun-2026) contra la guía TotalCloud/CloudView API vigente
+# (docs.qualys.com/en/tc/api/reports/create_report.htm): `cloudType` admite AWS, Azure, GCP y OCI.
+# La colección Postman pineada v1.23.0.0 (2022) enumeraba solo AWS/Azure/GCP; OCI se agregó después
+# (connectors 3.0 + evaluations v1 `/oci/evaluations/?tenantId=`). El smoke US03 no ejercitó OCI en
+# reportes -> se deja un callout de "confirma contra tu tenant / usa consola" para OCI.
 _CLOUD_REPORT_PARAMS = {
     "aws":   ("AWS",   "account id"),
     "azure": ("AZURE", "subscription id"),
@@ -296,11 +298,12 @@ curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley217
 ```
 
 Body de `create`: `reportName, format(CSV|PDF), cloudType, executionType(RUN_TIME|BUILD_TIME),
-policyIds[], connectorIds[], tagIds[], resourceResults[](PASS|PASSE|FAIL), resourceSummaryInclude,
-query(QQL opc), startDate, endDate`. **Asíncrono** (`create`→`reportId`→`list` hasta `Completed`→
-`download`). **El reporte se autoborra a los 7 días.**
+policyIds[], connectorIds[], tagIds[], resourceResults[](PASS · PASSE=pass-with-exception · FAIL),
+resourceSummaryInclude, query(QQL opc), startDate, endDate`. **Asíncrono**: `create`→`reportId`→
+`list?reportId=` (estado **Processing** → **Completed**, recién ahí descargable) → `download`. **El
+reporte se autoborra a los 7 días de creado.**
 
-### B) Mandate Report (posture vs. mandate regulatorio) — AWS/Azure/GCP
+### B) Mandate Report (posture vs. mandate regulatorio) — AWS/Azure/GCP/OCI
 
 La Ley 21.719 **no es un mandate nativo CSPM** → se puentea con un mandate **afín** (ISO 27001 /
 NIST 800-53 / GDPR) como evidencia.
@@ -323,16 +326,21 @@ curl -s -X POST -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \
         "title":"Ley 21.719 (mandate afín) - <cliente>" }'
 ```
 
-> ⚠️ **Verbo a verificar:** la colección Postman v1.23.0.0 marca "Create/Update a Report" como
-> `GET` con body (error de autoría) → casi seguro **POST/PUT**; confirma vs el *CloudView API User
-> Guide* o el tenant. Los de `/report/assessment/*` **sí** son POST (verificado).
+> ✅ **Verbo confirmado** (guía TotalCloud/CloudView API vigente, jun-2026 —
+> `docs.qualys.com/en/tc/api/reports/create_report.htm` / `.../reports/update_report.htm`):
+> **crear** el reporte es **`POST /cloudview-api/rest/v1/reports`** y **actualizar**
+> **`PATCH …/reports/{reportId}`**. La colección Postman v1.23.0.0 los marcaba como `GET` con body
+> (error de autoría). Los de `/report/assessment/*` son **POST** (create/rerun) y **GET**
+> (list/download).
 >
-> **OCI:** los mandate reports están documentados para **AWS/Azure/GCP**; para OCI, verificar (puede
-> no estar soportado → usar consola).
+> **OCI:** la guía vigente admite `cloudType` **OCI** en reportes (se agregó tras v1.23.0.0); el
+> smoke no lo ejercitó → confirma contra tu tenant OCI; si no responde, usa la **consola** (paso 3).
 
 **Docs (Qualys):** [Reports](https://docs.qualys.com/en/cloudview/latest/reports/reports.htm) ·
 [Assessment Report](https://docs.qualys.com/en/cloudview/latest/reports/assessment_report.htm) ·
-[Mandate Report](https://docs.qualys.com/en/cloudview/latest/reports/mandate_report.htm)
+[Mandate Report](https://docs.qualys.com/en/cloudview/latest/reports/mandate_report.htm) ·
+[API · Create a Report](https://docs.qualys.com/en/tc/api/reports/create_report.htm) ·
+[API · Create Assessment Report](https://docs.qualys.com/en/tc/api/assessment_reports/create_assessment_report.htm)
 
 """
 
@@ -346,7 +354,8 @@ def _cloud_report_section(provider: str, account: str) -> str:
         cloud_type, scope_label = _CLOUD_REPORT_PARAMS[p]
         provider_path = p
         scope_id = account or f"<{scope_label}>"
-        reports = ("⚠️ VERIFICAR — la API de reportes v1.23 documenta solo AWS/Azure/GCP"
+        reports = ("Assessment ✅ · Mandate ✅ (OCI soportado en la guía API vigente; "
+                   "no ejercitado en el smoke — confirma contra tu tenant)"
                    if p == "oci" else "Assessment ✅ · Mandate ✅")
     else:
         provider_path = "<aws|azure|gcp|oci>"
@@ -358,10 +367,11 @@ def _cloud_report_section(provider: str, account: str) -> str:
     oci_warn = ""
     if p == "oci":
         oci_warn = (
-            "> ⚠️ **OCI:** la API de reportes v1.23.0.0 documenta `cloudType` **solo para "
-            "AWS/Azure/GCP**. OCI está soportado en connectors/evaluations (lo que esta herramienta "
-            "ya lee), pero **NO está confirmado en los endpoints de reporte** → verifica contra tu "
-            "tenant; si no está soportado, usa el flujo de **consola** (paso 3).\n\n")
+            "> ⚠️ **OCI:** la guía TotalCloud/CloudView API **vigente** admite `cloudType` **OCI** en "
+            "reportes y expone connectors/evaluations OCI (`/oci/evaluations/?tenantId=`, que esta "
+            "herramienta ya lee); OCI **no estaba** en la colección Postman v1.23.0.0 pineada y **el "
+            "smoke no lo ejercitó en reportes** → confirma contra tu tenant OCI; si no responde, usa "
+            "el flujo de **consola** (paso 3).\n\n")
 
     return (_CLOUD_REPORT_TEMPLATE
             .replace("__OCI_WARN__", oci_warn)

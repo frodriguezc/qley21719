@@ -35,8 +35,8 @@ meta:
   transport: "REST JSON: cloudview-api/rest/v1 + qps/rest/3.0 (NO la XML API de PC)"
   design_doc: "DESIGN-cloud-posture.md"
   providers: [aws, azure, gcp, oci]
-  caveat_oci: "OCI: el KB de connectors lo cubre, pero la Postman enumera AWS/Azure/GCP. Si OCI no expone evaluations/connectors equivalentes, puede quedar fuera del pack (§7#5). NO asumir uniformidad multi-cloud."
-  ley_native_mandate: false   # Ley 21.719 NO está como mandate nativo CSPM (§7#6, al 2026-06). Se puentea vía mandate afín (ISO 27001 / NIST 800-53 / GDPR).
+  caveat_oci: "OCI (§7 #5 RESUELTO 2026-06): la guia tc/api vigente expone connectors OCI (3.0), evaluations OCI v1 (/oci/evaluations/?tenantId=) y cloudType=OCI en reportes; estaba ausente solo de la Postman v1.23.0.0 pineada. El smoke US03 NO ejercito OCI -> confirmar contra el tenant. Los ejemplos CIS OCI de abajo siguen (VERIFICAR): re-validar contra la version CIS OCI del tenant (no citados a CID)."
+  ley_native_mandate: false   # Ley 21.719 NO es mandate nativo CSPM (§7 #6 RESUELTO vs list_of_mandates.htm, 2026-06: sin mandate chileno/LATAM). Se puentea via mandate afin (ISO 27001 / NIST 800-53 / GDPR).
 
 # Las 5 familias legales (ids idénticos a mapping/ley21719.yaml). `config_only: true`
 # marca las familias donde el CSPM solo valida configuración, no el control real.

@@ -182,12 +182,13 @@ def test_apply_instructions_report_api_section_aws():
 
 
 def test_apply_instructions_report_api_section_oci_caveat():
-    # OCI: la API de reportes v1.23 documenta solo AWS/Azure/GCP -> la doc debe marcar "verificar".
+    # OCI: la guía API vigente admite cloudType OCI, pero el smoke no lo ejercitó en reportes ->
+    # la doc debe marcar "no ejercitado / confirma" + fallback de consola.
     with tempfile.TemporaryDirectory() as d:
         build_pack([], {}, SPEC, d, provider="oci", account="ocid1.tenancy.oc1..xxxx")
         md = (Path(d) / "apply-instructions.md").read_text(encoding="utf-8")
     assert "PROVIDER=oci CLOUD_TYPE=OCI" in md
-    assert "solo para AWS/Azure/GCP" in md                      # callout de caveat OCI
+    assert "smoke no lo ejercitó" in md                         # callout de caveat OCI (no ejercitado)
     assert "usa el flujo de **consola**" in md
 
 
