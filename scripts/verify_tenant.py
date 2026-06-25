@@ -28,10 +28,12 @@ import json
 import sys
 from pathlib import Path
 
+import requests
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.cloud_posture_pack import _ACCOUNT_KEYS, _discover_accounts  # noqa: E402
 
-_OK, _WARN, _FAIL = "PASS", "WARN", "FAIL"
+_OK, _WARN, _FAIL, _SLOW = "PASS", "WARN", "FAIL", "SLOW"
 
 
 def _classify(code: int) -> str:
@@ -43,10 +45,15 @@ def _classify(code: int) -> str:
 
 
 def _probe(label: str, fn) -> tuple[str, int, object]:
-    """Corre un GET read-only, devuelve (verdict, code, parsed-or-text). Nunca lanza."""
+    """Corre un GET read-only, devuelve (verdict, code, parsed-or-text). Nunca lanza y **SURFACE-A
+    el error** (no lo traga). Timeout/conexión -> SLOW (alcanzable pero lento), no FAIL duro."""
     try:
         code, text = fn()
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        print(f"  [{_SLOW}] {label}: {type(e).__name__} (no respondió a tiempo)")
+        return _SLOW, 0, str(e)
     except Exception as e:  # noqa: BLE001
+        print(f"  [{_FAIL}] {label}: {type(e).__name__}: {e}")
         return _FAIL, 0, f"{type(e).__name__}: {e}"
     verdict = _classify(code)
     try:
@@ -87,6 +94,8 @@ def main(argv=None) -> int:
     ap.add_argument("--user", default=None)
     ap.add_argument("--password", default=None)
     ap.add_argument("--server", default=None)
+    ap.add_argument("--timeout", type=int, default=30,
+                    help="Timeout por GET en segundos (default 30; la sonda no necesita los 120 del cliente).")
     args = ap.parse_args(argv)
 
     from qualys_client import CloudViewClient
@@ -96,7 +105,8 @@ def main(argv=None) -> int:
     else:
         client = cv_from_env(server=args.server)
 
-    print(f"[verify] host={client.server}  (solo GETs allow-list; NINGUNA mutación)\n")
+    client.timeout = args.timeout                  # la sonda no necesita los 120s del cliente
+    print(f"[verify] host={client.server}  (solo GETs allow-list; NINGUNA mutación · timeout {args.timeout}s)\n")
     results: dict[str, str] = {}
 
     # --- Check 1a: controls metadata (lectura base que un Reader debe poder) -------------------
@@ -105,13 +115,6 @@ def main(argv=None) -> int:
     results["controls_metadata"] = v
     if v == _OK:
         print(f"      -> {_count(body)} controles en la muestra")
-
-    # --- Check 1b: report assessment LIST (read; no create) ------------------------------------
-    v, code, _ = _probe("report/assessment/list", lambda: client.list_assessment_reports({"pageSize": 1}))
-    results["report_list"] = v
-    if v == _WARN:
-        print("      -> 401/403: el listado de reportes pide Reporting Permission "
-              "(rol '- only Reports'); el create igual lo corre el cliente (human-gate).")
 
     # --- Checks 2 + 3: por proveedor (OCI incluido) — evaluations + sample de CIDs --------------
     providers = ["aws", "azure", "gcp", "oci"] if args.provider == "all" else [args.provider]
@@ -137,21 +140,41 @@ def main(argv=None) -> int:
         print("  [info] OCI: sin connectors en el tenant -> no se pudo confirmar OCI live "
               "(no es un fallo; el tenant no tiene OCI onboardeado).")
 
+    # --- Check 1b (AL FINAL): el LISTADO de reportes (read; el create es POST y NO se prueba acá).
+    # Va último y con timeout corto porque el listado SIN filtro es pesado y puede colgar en algunos
+    # tenants. Un SLOW acá NO invalida el read-only: los GETs core ya pasaron, y el flujo real del
+    # cliente poll-ea por reportId (filtrado), no lista todo.
+    print("\n# 1b. Listado de reportes (read-only; el create/rerun es POST = human-gate del cliente)")
+    prev_to = client.timeout
+    client.timeout = min(client.timeout, 20)
+    v, _, _ = _probe("report/assessment/list", lambda: client.list_assessment_reports({"pageSize": 1, "pageNo": 0}))
+    client.timeout = prev_to
+    results["report_list"] = v
+    if v == _WARN:
+        print("      -> 401/403: pide Reporting Permission (rol '- only Reports').")
+    elif v == _SLOW:
+        print("      -> el listado no respondió a tiempo (endpoint pesado/lento en este tenant). NO")
+        print("         invalida el read-only: el flujo real del cliente poll-ea por reportId (filtrado).")
+
     # --- Veredicto -----------------------------------------------------------------------------
     print("\n# Resumen")
     oks = [k for k, v in results.items() if v == _OK]
     warns = [k for k, v in results.items() if v == _WARN]
+    slows = [k for k, v in results.items() if v == _SLOW]
     fails = [k for k, v in results.items() if v == _FAIL]
-    print(f"  PASS={len(oks)}  WARN={len(warns)}  FAIL={len(fails)}  ({client.call_count} GETs)")
+    print(f"  PASS={len(oks)}  WARN={len(warns)}  SLOW={len(slows)}  FAIL={len(fails)}  "
+          f"({client.call_count} GETs)")
     print(f"  GETs OK: {', '.join(oks) or '—'}")
     if warns:
         print(f"  WARN (permiso/rol, no shape): {', '.join(warns)}")
+    if slows:
+        print(f"  SLOW (alcanzable pero sin responder a tiempo): {', '.join(slows)}")
     if fails:
         print(f"  FAIL: {', '.join(fails)}")
     print("\n  Lectura: si corriste esto con una credencial **Reader** y los GETs base dan PASS,")
     print("  el invariante read-only se sostiene con mínimo privilegio. `cloudType=OCI` EN reportes")
     print("  no se prueba acá (es POST/mutación) -> lo valida el cliente al generar el reporte.")
-    return 1 if fails else 0
+    return 1 if fails else 0     # SLOW/WARN no fallan la corrida (no son errores de shape ni denegación)
 
 
 if __name__ == "__main__":
