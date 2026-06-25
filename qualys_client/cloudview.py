@@ -10,14 +10,19 @@ report list/download). Cualquier otro path —o cualquier intento de mutación (
 run/create, report create)— levanta QualysReadOnlyError ANTES de tocar la red. No hay
 método POST/PUT/DELETE: no hay forma de mutar el tenant.
 
-Endpoints verificados vs el CloudView API User Guide (jun-2026); ver
-mapping/platform_coverage.yaml `cspm_api`. Auth: HTTP Basic + X-Requested-With.
+Endpoints verificados vs la coleccion Postman v1.23.0.0 + la guia TotalCloud/CloudView API
+vigente (docs.qualys.com/en/tc/api, jun-2026); ver mapping/platform_coverage.yaml `cspm_api`.
+Auth: HTTP Basic + X-Requested-With.
 
 CAVEATS (mapping/platform_coverage.yaml `cspm_api.caveats`):
   - El host del gateway CSPM puede diferir del host FO por POD -> `server` es override-able;
     por defecto reutiliza el host de PODS (verificar contra el tenant si CSPM usa otro gateway).
-  - Rol read-only (§7#8): confirmar que un usuario Reader puede leer evaluations/reports
-    SIN permisos de mutación. Este cliente solo emite GETs; el invariante de ROL es del tenant.
+  - Rol read-only (§7 #8, RESUELTO a nivel doc — Reporting_Permission.htm): un sub-user con rol
+    READER VE reporting controls/connectors y puede LEER reportes; CREAR/correr reportes (el POST
+    de §3b, human-gate) requiere la Reporting Permission asignada por un Manager (rol pre-definido
+    '- only Reports'). Este cliente solo emite GETs -> un Reader basta para la herramienta; el
+    invariante de ROL para el `create` es del tenant. Falta validar live el GET de evaluations con
+    una credencial Reader-scoped (el smoke uso un Manager).
 """
 from __future__ import annotations
 
@@ -33,7 +38,11 @@ from .client import (PODS, QualysReadOnlyError, _read_dotenv,
 CV_BASE = "/cloudview-api/rest/v1"
 
 # Allow-list de paths de LECTURA (relativos a CV_BASE). Si ninguno matchea -> se rechaza.
-# Verificados vs CloudView API User Guide. GCP per-resource/stats por simetría (PARTIAL).
+# Verificados vs Postman v1.23.0.0 + guia tc/api (jun-2026): controls/metadata, {aws|azure|gcp}
+# connectors/evaluations/{resources,stats}, groups, /oci/evaluations/?tenantId=, report assessment
+# list/download. Notas: /evaluations/stats confirmado para AWS/Azure/GCP (OCI no lo expone); los
+# connectors OCI viven en el namespace 3.0 (qps/rest/3.0) -> /oci/connectors aqui es defensivo
+# (read-only, GET-only) y puede dar 404 (las OCI evaluations si estan en v1).
 _CV_READ_PATTERNS = tuple(re.compile(p) for p in (
     r"^/controls/metadata/list/?$",
     # connector detail acepta cualquier id, MENOS verbos de mutación (defensa en profundidad
