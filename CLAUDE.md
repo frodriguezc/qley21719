@@ -26,11 +26,13 @@ Dos motores READ-ONLY independientes (host-based PC + cloud-posture CSPM) + una 
 ```
 scripts/tenant_coverage_pack.py   [PC] orquesta: sweep -> reconcile -> generate -> emit (policy.xml)
 scripts/cloud_posture_pack.py     [CSPM] orquesta: harvest controls -> resolve posture -> classify -> emit (mapping report; NO policy.xml)
+scripts/reconcile.py              [PC+CSPM] vista por-artículo: joinea los dos mapping.csv por familia -> coverage-by-article.md (UNIÓN por sustrato, sin sumar entre planos). Read-only, sin tenant.
+scripts/verify_tenant.py          [CSPM] sonda READ-ONLY del tenant (rol Reader / OCI live / CIDs); cierra los confirmables-live de §7. NINGUNA mutación (solo GETs).
   ├─ qualys_client/               clientes HTTP READ-ONLY — IMPLEMENTACIÓN PROPIA (sin código de terceros).
   │     client.py                 QualysClient: FO XML (api/2.0|4.0/fo) + QPS. Solo list/fetch/count/export + /search|/count.
   │     cloudview.py              CloudViewClient: CSPM REST (cloudview-api/rest/v1), gate ALLOW-LIST-ONLY (solo GET enumerados).
   ├─ compliance_pack/             [PC] generador del Policy XML: harvest -> classify -> assemble -> validate -> emit.
-  ├─ cloud_pack/                  [CSPM] generador del mapping report: classify (keyword) -> emit (mapping.csv/fails/gaps/apply-instructions).
+  ├─ cloud_pack/                  [CSPM] generador del mapping report: classify (keyword) -> emit (mapping.csv/fails/gaps/apply-instructions); + reconcile.py (vista PC+cloud por artículo).
   └─ mapping/
        ley21719.yaml              [PC] spec de la ley: familias, niveles (Art. 14 septies), clasificación agnóstica.
        cis_catalog.yaml           [PC] catálogo tecnología -> benchmark CIS. `targets` (PC) + `additional_domains` (otro motor, pc_importable:false).
