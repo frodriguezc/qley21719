@@ -21,8 +21,9 @@ CAVEATS (mapping/platform_coverage.yaml `cspm_api.caveats`):
     READER VE reporting controls/connectors y puede LEER reportes; CREAR/correr reportes (el POST
     de §3b, human-gate) requiere la Reporting Permission asignada por un Manager (rol pre-definido
     '- only Reports'). Este cliente solo emite GETs -> un Reader basta para la herramienta; el
-    invariante de ROL para el `create` es del tenant. Falta validar live el GET de evaluations con
-    una credencial Reader-scoped (el smoke uso un Manager).
+    invariante de ROL para el `create` es del tenant. Verify live 2026-06-25 con MANAGER: los GETs
+    read-only (controls + AWS/GCP evaluations) dan 200; el run Reader-scoped queda PENDIENTE (aún no
+    hay un API user Reader provisionado -> lo cierra scripts/verify_tenant.py --user <reader>).
 """
 from __future__ import annotations
 
