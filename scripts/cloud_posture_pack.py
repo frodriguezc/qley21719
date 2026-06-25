@@ -64,9 +64,14 @@ def _fetch_all_evaluations(client, provider, account, page_size=500, max_pages=2
 
 
 def _discover_accounts(client, provider):
-    """Lista los connectors del provider (GET read-only) y extrae los account/subscription/project ids."""
+    """Lista los connectors del provider (GET read-only) y extrae los account/subscription/project ids.
+    OCI va por la Connector Management API (`/connectors/v1.0/OCI/list`): cloudview-api/oci/connectors
+    NO existe (404). El resto (aws/azure/gcp) por cloudview-api `/<prov>/connectors`."""
     try:
-        code, text = client.list_connectors(provider)
+        if provider == "oci":
+            code, text = client.list_cloud_connectors("OCI", {"pageSize": 100})
+        else:
+            code, text = client.list_connectors(provider)
     except Exception:
         return []
     if code != 200:

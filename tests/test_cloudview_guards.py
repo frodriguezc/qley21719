@@ -197,6 +197,23 @@ def test_jwt_auth_failure_propagates_and_skips_data_get():
     assert c.sess.gets == []        # nunca se hizo el GET de datos
 
 
+def test_list_cloud_connectors_path_and_validation():
+    c, calls = _client_with_recorder()
+    code, _ = c.list_cloud_connectors("OCI")
+    assert code == 200
+    # va a la Connector Management API (no cloudview-api), con el TYPE en mayúsculas + /list
+    assert calls[0]["url"].endswith("/connectors/v1.0/OCI/list")
+    assert calls[0]["params"]["pageNumber"] == 0
+    # cloud_type inválido -> rechazo ANTES de la red
+    n = len(calls)
+    try:
+        c.list_cloud_connectors("ORACLE")
+        raise AssertionError("cloud_type inválido no rechazado")
+    except QualysReadOnlyError:
+        pass
+    assert len(calls) == n
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
