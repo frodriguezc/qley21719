@@ -38,6 +38,11 @@ from .client import (QualysReadOnlyError, _read_dotenv,
                      _retry_after_seconds, _throttle_note)
 
 CV_BASE = "/cloudview-api/rest/v1"
+# Connector Management API (gateway + JWT): GET /connectors/v1.0/<TYPE>/list. Es el endpoint
+# correcto para listar connectors —el ÚNICO para OCI: cloudview-api/oci/connectors NO existe (404)
+# y OCI tampoco está en QPS (INVALID_API_VERSION)—. Soporta AWS/AZURE/GCP/OCI. Read-only (GET).
+CONN_BASE = "/connectors/v1.0"
+_CLOUD_TYPES = ("AWS", "AZURE", "GCP", "OCI")
 
 # Host del API Gateway de Qualys por POD: CloudView/TotalCloud van por acá (con JWT). El host FO
 # (qualysapi.*) NO sirve cloudview-api; el portal (qualysguard.*) lo rechaza con JWT/Basic.
@@ -61,9 +66,11 @@ GATEWAYS = {
 # Allow-list de paths de LECTURA (relativos a CV_BASE). Si ninguno matchea -> se rechaza.
 # Verificados vs Postman v1.23.0.0 + guia tc/api (jun-2026): controls/metadata, {aws|azure|gcp}
 # connectors/evaluations/{resources,stats}, groups, /oci/evaluations/?tenantId=, report assessment
-# list/download. Notas: /evaluations/stats confirmado para AWS/Azure/GCP (OCI no lo expone); los
-# connectors OCI viven en el namespace 3.0 (qps/rest/3.0) -> /oci/connectors aqui es defensivo
-# (read-only, GET-only) y puede dar 404 (las OCI evaluations si estan en v1).
+# list/download. Notas: /evaluations/stats confirmado para AWS/Azure/GCP (OCI no lo expone).
+# Connectors: cloudview-api expone /{aws|azure|gcp}/connectors (200), pero /oci/connectors NO existe
+# (404, VERIFICADO live) y OCI tampoco está en QPS -> los connectors (incl. OCI) se listan por la
+# Connector Management API `GET /connectors/v1.0/<TYPE>/list` (ver `list_cloud_connectors`). El
+# patrón /oci/connectors abajo queda defensivo (GET-only); la OCI evaluations sí está en v1.
 _CV_READ_PATTERNS = tuple(re.compile(p) for p in (
     r"^/controls/metadata/list/?$",
     # connector detail acepta cualquier id, MENOS verbos de mutación (defensa en profundidad
@@ -191,6 +198,22 @@ class CloudViewClient:
 
     def list_assessment_reports(self, params: dict | None = None) -> tuple[int, str]:
         return self.cv_get("/report/assessment/list", params)
+
+    def list_cloud_connectors(self, cloud_type: str,
+                              params: dict | None = None) -> tuple[int, str]:
+        """Lista connectors vía la Connector Management API (gateway + JWT, read-only):
+        GET /connectors/v1.0/<TYPE>/list. Es el endpoint correcto para **OCI** (cloudview-api/oci/
+        connectors NO existe). `cloud_type` ∈ AWS/AZURE/GCP/OCI. Cada item trae el id de cuenta
+        (OCI: `tenantId`) para luego leer evaluations. GET-only: no hay forma de mutar."""
+        ct = (cloud_type or "").upper()
+        if ct not in _CLOUD_TYPES:
+            raise QualysReadOnlyError(
+                f"cloud_type inválido: {cloud_type!r} (esperado uno de {_CLOUD_TYPES}).")
+        p = {"pageNumber": 0, "pageSize": 100}
+        if params:
+            p.update(params)
+        r = self._request(f"{self.server}{CONN_BASE}/{ct}/list", params=p)
+        return r.status_code, r.text
 
 
 def from_env(server: str | None = None) -> CloudViewClient:
