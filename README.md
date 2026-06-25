@@ -35,6 +35,30 @@ corre los motores que apliquen y deja todo en **`deliverables/`**. Muestra **mon
 
 Variables opcionales: `MAX_HOSTS=5000` (tope de hosts a barrer), `PACK_NAME="Ley 21.719 - Mi Empresa"`.
 
+### Varios tenants (reportes separados)
+
+¿Querés probar **otro tenant** sin pisar los reportes del primero? Usá un **env-file por cliente**
+y la variable `TENANT`:
+
+```bash
+cp .env.example .env.clienteA      # credenciales del cliente A (gitignored, igual que .env)
+cp .env.example .env.clienteB      # credenciales del cliente B
+TENANT=clienteA ./run.sh           # -> deliverables/clienteA/  + artifacts/clienteA/
+TENANT=clienteB ./run.sh           # -> deliverables/clienteB/  + artifacts/clienteB/
+```
+```powershell
+$env:TENANT='clienteA'; ./run.ps1  # Windows
+```
+
+`TENANT=<slug>` aísla **credenciales, reportes y la caché de harvest** por cliente: cada corrida
+escribe en `deliverables/<slug>/` y `artifacts/<slug>/`, y **no toca** las de los demás tenants
+(además, al estar aislada, conserva la caché → re-runs más rápidos). Si `.env.<slug>` no existe,
+cae a las credenciales del entorno/`.env`. Los `.env.*` están **gitignored** (solo `.env.example`
+se versiona). Sin `TENANT` el comportamiento es el clásico de un solo tenant (`deliverables/`).
+
+> Alternativa sin `run.sh`: correr los scripts directo con `--out` por tenant y credenciales por
+> entorno o `--pod/--user/--password` (ver **Uso manual** abajo).
+
 ---
 
 ## Qué obtienes (`deliverables/`)

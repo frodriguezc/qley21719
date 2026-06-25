@@ -74,6 +74,14 @@ El cliente importa (UI: Policies > New > Import from XML File, o `bash subir.sh`
 tags/groups). Para sumar tecnologías: importar los benchmarks de `faltantes.txt` desde la librería y
 **re-correr** la herramienta. Ver `README.md` (cara al cliente) y `compliance_pack/README.md`.
 
+**Orquestadores `run.sh` / `run.ps1`.** Encadenan venv → módulos → ambos motores → consolidan en
+`deliverables/`. **Consolidan leyendo la corrida REAL del motor** (`latest_run` resuelve el `run_id`
+más nuevo bajo `tenant-pack/<slug-name>/` — NO rutas planas; un mismatch ahí dejaba `2-policy-xml/`
+vacío en silencio). **Multi-tenant:** `TENANT=<slug>` aísla credenciales (`.env.<slug>`, exportado al
+entorno → precedencia de `from_env`), reportes (`deliverables/<slug>/`, `artifacts/<slug>/`) y la
+caché de harvest por cliente; sin `TENANT` es el modo clásico de un solo tenant (sí limpia la salida
+vieja). El slug usa el mismo criterio que `slugify()` (sin path-traversal). Los `.env.*` están gitignored.
+
 **Observabilidad de la corrida.** El `run.log` registra (UTC, secret-safe) cada **backoff** por throttle
 (`429/409`) y el **latido del harvest** (`cosechando N/total`) — útil porque exportar benchmarks grandes es
 la parte lenta y antes quedaba en silencio. Con `--debug`, el diagnóstico de throttle (concurrency vs rate,
