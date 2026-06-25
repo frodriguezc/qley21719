@@ -405,6 +405,13 @@ Scope leído: provider=`{provider or '(varios)'}`  account/connector=`{account o
         "NOTA de alcance: el CSPM valida la CONFIGURACIÓN (cifrado/backup/red); no cifra, no respalda, no\n"
         "restaura ni clasifica el dato. Las familias `cifrado` y `disponibilidad` son config-only (gap honesto).\n"
         "La Ley 21.719 NO es un mandate nativo CSPM: se puentea vía mandate afín (ISO 27001 / NIST 800-53 / GDPR).\n"
+        "\n"
+        "RECONCILIACIÓN PC + cloud: este pack cubre el plano CLOUD (recursos descubiertos por connector). Si la\n"
+        "misma cuenta también tiene el pack PC (hosts), un mismo artículo puede aparecer cubierto en AMBOS por\n"
+        "sustratos distintos (un control sobre un host != un control sobre un recurso cloud). Léelos como UNIÓN\n"
+        "por artículo: NO sumes ni promedies la cobertura entre planos (poblaciones distintas -> doble conteo).\n"
+        "Un 'gap' cloud solo cuenta si la cuenta tiene assets cloud en esa área (connector activo); un 'gap' PC,\n"
+        "solo si hay hosts de esa tecnología. El reporte por-artículo es la vista correcta; el % por plano, no.\n"
     )
     md = head + _cloud_report_section(provider, account) + tail
     with open(path, "w", encoding="utf-8") as fh:

@@ -35,7 +35,7 @@ meta:
   transport: "REST JSON: cloudview-api/rest/v1 + qps/rest/3.0 (NO la XML API de PC)"
   design_doc: "DESIGN-cloud-posture.md"
   providers: [aws, azure, gcp, oci]
-  caveat_oci: "OCI (§7 #5 RESUELTO 2026-06): la guia tc/api vigente expone connectors OCI (3.0), evaluations OCI v1 (/oci/evaluations/?tenantId=) y cloudType=OCI en reportes; estaba ausente solo de la Postman v1.23.0.0 pineada. El smoke US03 NO ejercito OCI -> confirmar contra el tenant. Los ejemplos CIS OCI de abajo siguen (VERIFICAR): re-validar contra la version CIS OCI del tenant (no citados a CID)."
+  caveat_oci: "OCI (§7 #5 RESUELTO 2026-06): la guia tc/api vigente expone connectors OCI (3.0), evaluations OCI v1 (/oci/evaluations/?tenantId=) y cloudType=OCI en reportes; estaba ausente solo de la Postman v1.23.0.0 pineada. El smoke US03 NO ejercito OCI -> confirmar contra el tenant. Los ejemplos CIS OCI de abajo (§7 #B3) estan fundados en CIS OCI Foundations v3.1.0 (2026-03, = el cis_version de cis_catalog.yaml); son recomendaciones del benchmark (no CIDs del tenant) -> validar a nivel CID contra el CSPM al desplegar."
   ley_native_mandate: false   # Ley 21.719 NO es mandate nativo CSPM (§7 #6 RESUELTO vs list_of_mandates.htm, 2026-06: sin mandate chileno/LATAM). Se puentea via mandate afin (ISO 27001 / NIST 800-53 / GDPR).
 
 # Las 5 familias legales (ids idénticos a mapping/ley21719.yaml). `config_only: true`
@@ -51,11 +51,11 @@ families:
       - "Art. 14 bis — deber de secreto o confidencialidad"
       - "Art. 3° h) — principio de confidencialidad"
     bridge_mandates: ["ISO/IEC 27001:2022", "NIST 800-53 Rev5", "CIS Controls v8"]
-    examples:   # ASSUMPTION — no citados a CID; re-validar contra la versión del benchmark
+    examples:   # recomendaciones del benchmark CIS (NO CIDs del tenant). OCI fundado en CIS OCI Foundations v3.1.0 (2026-03, §7 #B3); validar a nivel CID contra el CSPM del tenant al desplegar.
       aws: ["MFA en root + usuarios IAM", "política de contraseñas", "sin access keys de root", "sin IAM policy *:*"]
       azure: ["MFA por acceso condicional", "PIM para roles privilegiados"]
       gcp: ["sin roles primitivos Owner/Editor", "2SV obligatorio"]
-      oci: ["MFA, políticas IAM mínimas (VERIFICAR cobertura OCI)"]
+      oci: ["MFA para todo usuario con consola", "password policy: long >= 14 + expira 365d + sin reuso", "API keys/auth tokens rotan <= 90d", "sin policy tenancy-wide a todos los grupos", "credenciales sin uso >= 45d deshabilitadas"]
     note: "Incl. identidad cloud (Entra ID) vía ETM Identity / CSPM. La pata humana del secreto es organizacional."
   - id: cifrado
     number: 2
@@ -68,7 +68,7 @@ families:
       aws: ["cifrado S3/EBS", "deny no-SSL", "rotación de CMK"]
       azure: ["'Secure transfer required'", "Key Vault", "TLS >= 1.2"]
       gcp: ["CMEK", "rotación de llaves", "SSL en Cloud SQL"]
-      oci: ["cifrado de block/object storage (VERIFICAR)"]
+      oci: ["Object Storage con Customer-Managed Key (CMK)", "Block/Boot/FSS volumes con CMK", "rotación anual de la CMK (Vault)"]
     note: "CSPM detecta AUSENCIA/debilidad de cifrado en la config; NO cifra ni seudonimiza. Gap honesto."
   - id: auditoria
     number: 3
@@ -82,7 +82,7 @@ families:
       aws: ["CloudTrail multi-región + validación + KMS", "AWS Config", "alarmas de cambios"]
       azure: ["diagnostic settings", "Microsoft Defender for Cloud"]
       gcp: ["Admin Activity + Data Access logs", "métricas de cambios IAM"]
-      oci: ["Audit service retención (VERIFICAR)"]
+      oci: ["retención de Audit log >= 365d", "notificaciones de cambios IAM policy / network / security list", "Cloud Guard habilitado en root compartment", "VCN flow logs habilitados", "Object Storage write-level logging"]
     note: "El sustrato de detección/registro; el acto de reportar a la Agencia es organizacional."
   - id: hardening
     number: 4
@@ -96,7 +96,7 @@ families:
       aws: ["sin SG 0.0.0.0/0 a 22/3389", "S3 Block Public Access", "RDS no público"]
       azure: ["NSG sin RDP/SSH a Internet", "storage sin acceso anónimo"]
       gcp: ["firewall sin ingreso a 22/3389", "buckets sin allUsers"]
-      oci: ["security lists sin 0.0.0.0/0 a puertos sensibles (VERIFICAR)"]
+      oci: ["sin security list 0.0.0.0/0 a 22/3389", "sin NSG 0.0.0.0/0 a 22/3389", "default security list restringe todo salvo ICMP intra-VCN", "Object Storage buckets no públicos"]
     note: "Incl. baselines de contenedores. Catch-all: un control cloud sin familia explícita cae acá."
   - id: disponibilidad
     number: 5
@@ -109,7 +109,7 @@ families:
       aws: ["versionado + MFA-delete S3", "backups RDS", "multi-AZ"]
       azure: ["soft-delete + versionado de blob", "GRS"]
       gcp: ["backups + HA regional Cloud SQL"]
-      oci: ["backups de DB/block volume (VERIFICAR)"]
+      oci: ["versionado de Object Storage", "política de backup de Block Volume (config-level; CIS OCI Foundations cubre poco DR)"]
     note: "CSPM valida la CONFIGURACIÓN de backup/replicación; NO el restore real ni RTO/RPO. Gap honesto."
   # Bucket NO-legal (no es una de las 5 familias). Controles CSPM que NO son una medida técnica de
   # seguridad de datos (telemetría de performance/APM, optimización de costo, housekeeping de
