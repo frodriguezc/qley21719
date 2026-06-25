@@ -99,8 +99,10 @@ stream_soft(){ local label="$1"; shift; ts "▶ $label"; "$@" 2>&1 | sed 's/^/  
 main(){
   # ---- multi-tenant (opcional) ------------------------------------------- #
   # TENANT=<slug> aísla credenciales + reportes + caché por cliente. Sin TENANT: modo clásico.
-  local TENANT TSLUG ENVFILE DEFAULT_NAME WIPE_ENGINE ART DELIV MAXHOSTS NAME k v
-  TENANT="${TENANT:-}"
+  # OJO bash 3.2 (el de macOS, al que apunta `#!/usr/bin/env bash`): `local TENANT` SIN asignar
+  # BORRA el valor heredado del entorno. Hay que capturarlo en la MISMA línea del `local`.
+  local TENANT="${TENANT:-}"
+  local TSLUG ENVFILE DEFAULT_NAME WIPE_ENGINE ART DELIV MAXHOSTS NAME k v
   ART="$HERE/artifacts"; DELIV="$HERE/deliverables"     # modo clásico (un tenant)
   ENVFILE="$HERE/.env"                                   # de dónde salen MAX_HOSTS/PACK_NAME
   DEFAULT_NAME="Ley 21.719 - Medidas de Seguridad"
