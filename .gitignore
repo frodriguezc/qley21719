@@ -1,6 +1,7 @@
 # Credenciales — NUNCA commitear (.env.example SÍ se versiona, es la plantilla)
-.env
-.env.*
+# `.env*` (sin punto) atrapa también variantes como `.env.<tenant>`, `.env copy.example`,
+# `.env-backup`, etc. — `.env.*` (con punto) las dejaba afuera por el espacio/sin-punto.
+.env*
 !.env.example
 config.yaml
 config.yml
