@@ -24,30 +24,39 @@ from qualys_client.cloudview import CloudViewClient  # noqa: E402
 from qualys_client.cloudview import from_env as cv_from_env  # noqa: E402
 
 
-def _probe_pol(fo: QualysClient) -> tuple[bool, str]:
-    """POL disponible si compliance/policy list responde 200 sin error de suscripción."""
+# Estados de una probe (NO confundir "auth" con "absent"):
+#   ok     -> el módulo responde 200 y está habilitado.
+#   absent -> autenticó OK pero la suscripción/usuario NO tiene el módulo (200 + "not subscribed").
+#   auth   -> HTTP 401/403: credenciales/POD/permiso rechazados. NO dice nada sobre el módulo.
+#   error  -> otro fallo (HTTP raro, red, etc.).
+def _probe_pol(fo: QualysClient) -> tuple[str, str]:
+    """Clasifica POL probando compliance/policy list."""
     try:
         code, text = fo.fo_get("/api/4.0/fo/compliance/policy/", {"action": "list"})
     except Exception as e:  # noqa: BLE001
-        return False, f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
+        return "error", f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
+    if code in (401, 403):
+        return "auth", f"HTTP {code}: autenticación/permiso rechazado (NO es ausencia de módulo)"
     if code != 200:
-        return False, f"HTTP {code}: {text[:160].strip()}"
+        return "error", f"HTTP {code}: {text[:160].strip()}"
     low = text.lower()
     if "not subscribed" in low or "no permission" in low or "<code>2007" in low:
-        return False, "el usuario/suscripción no tiene Policy Compliance habilitado"
+        return "absent", "el usuario/suscripción no tiene Policy Compliance habilitado"
     n = text.count("<POLICY>")
-    return True, f"HTTP 200 · {n} policies listadas"
+    return "ok", f"HTTP 200 · {n} policies listadas"
 
 
-def _probe_tc(cv: CloudViewClient) -> tuple[bool, str]:
-    """TC disponible si controls/metadata/list (CSPM) responde 200."""
+def _probe_tc(cv: CloudViewClient) -> tuple[str, str]:
+    """Clasifica TC probando controls/metadata/list (CSPM)."""
     try:
         code, text = cv.list_controls({"pageSize": 1})
     except Exception as e:  # noqa: BLE001
-        return False, f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
+        return "error", f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
+    if code in (401, 403):
+        return "auth", f"HTTP {code}: autenticación/permiso rechazado (NO es ausencia de módulo)"
     if code != 200:
-        return False, f"HTTP {code}: {text[:160].strip()}"
-    return True, "HTTP 200 · controls/metadata accesible"
+        return "error", f"HTTP {code}: {text[:160].strip()}"
+    return "ok", "HTTP 200 · controls/metadata accesible"
 
 
 def main(argv=None) -> int:
@@ -67,13 +76,21 @@ def main(argv=None) -> int:
         cv = cv_from_env(server=args.server)
 
     print(f"[modules] POD {fo.pod} · FO {fo.server} · CSPM {cv.server}", flush=True)
-    pol_ok, pol_why = _probe_pol(fo)
-    print(f"  POL (Policy Compliance): {'OK' if pol_ok else 'FALTA'} — {pol_why}", flush=True)
-    tc_ok, tc_why = _probe_tc(cv)
-    print(f"  TC  (TotalCloud/CSPM):   {'OK' if tc_ok else 'FALTA'} — {tc_why}", flush=True)
+    pol_state, pol_why = _probe_pol(fo)
+    tc_state, tc_why = _probe_tc(cv)
+    LABEL = {"ok": "OK", "absent": "FALTA", "auth": "AUTH✗", "error": "ERROR"}
+    print(f"  POL (Policy Compliance): {LABEL[pol_state]} — {pol_why}", flush=True)
+    print(f"  TC  (TotalCloud/CSPM):   {LABEL[tc_state]} — {tc_why}", flush=True)
+
+    pol_ok = pol_state == "ok"
+    tc_ok = tc_state == "ok"
+    # 401/403 = autenticación rechazada → NO es "módulo faltante". Si NADA autenticó, abortar fuerte:
+    # producir un pack vacío con "✓ LISTO" engaña (el síntoma original que mandó por la pista equivocada).
+    auth_fatal = (pol_state == "auth" or tc_state == "auth") and not (pol_ok or tc_ok)
 
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ICON = {"ok": "✅ disponible", "absent": "❌ falta", "auth": "🔐 auth/permiso rechazado", "error": "⚠️ error"}
     md = [
         "# Módulos Qualys disponibles en el tenant",
         "",
@@ -81,25 +98,48 @@ def main(argv=None) -> int:
         "",
         "| Módulo | Motor | Estado | Detalle |",
         "|---|---|---|---|",
-        f"| **Policy Compliance / Policy Audit** | host-based (`policy.xml`) | {'✅ disponible' if pol_ok else '❌ falta'} | {pol_why} |",
-        f"| **TotalCloud / CloudView (CSPM)** | cloud-posture | {'✅ disponible' if tc_ok else '❌ falta'} | {tc_why} |",
+        f"| **Policy Compliance / Policy Audit** | host-based (`policy.xml`) | {ICON[pol_state]} | {pol_why} |",
+        f"| **TotalCloud / CloudView (CSPM)** | cloud-posture | {ICON[tc_state]} | {tc_why} |",
         "",
         "## Qué significa",
         "- **POL** genera el `policy.xml` de la Ley 21.719 (controles CIS host-based) + `faltantes.txt`.",
         "- **TC** genera el mapeo de posture cloud (CSPM) por cuenta.",
     ]
-    if not pol_ok:
-        md.append("- ⚠️ **Sin POL:** no se genera `policy.xml` ni `faltantes.txt`. Habilitar Policy "
-                  "Compliance/Audit en la suscripción (o usar un API user con ese módulo).")
-    if not tc_ok:
-        md.append("- ⚠️ **Sin TC:** no se genera el pack cloud-posture. Habilitar TotalCloud/CloudView "
-                  "(o verificar el host CSPM / rol del API user).")
-    if pol_ok and tc_ok:
-        md.append("- ✅ Ambos motores disponibles: se generan todos los deliverables.")
+    if auth_fatal:
+        md += [
+            "",
+            "## 🔐 Autenticación rechazada (HTTP 401/403) — NO es ausencia de módulos",
+            "Las credenciales no autenticaron contra este POD. Esto **no** dice si el tenant tiene",
+            "POL/TC: hay que arreglar la conexión primero. Revisá, en orden:",
+            f"1. **POD**: `{fo.pod}` ¿es el del cliente? (el default de `.env.example` es `US03`). "
+            "Confirmalo en la URL de la consola del cliente (`qualysguard.qgN…` → `US0N`).",
+            "2. **Usuario/clave** del API user correctos para ese POD.",
+            "3. El API user tiene **API Access** habilitado (no es un usuario solo-UI/SSO).",
+        ]
+    else:
+        if pol_state == "absent":
+            md.append("- ⚠️ **Sin POL:** no se genera `policy.xml` ni `faltantes.txt`. Habilitar Policy "
+                      "Compliance/Audit en la suscripción (o usar un API user con ese módulo).")
+        elif pol_state in ("auth", "error"):
+            md.append(f"- ⚠️ **POL no verificable** ({pol_why}). No es ausencia de módulo confirmada.")
+        if tc_state == "absent":
+            md.append("- ⚠️ **Sin TC:** no se genera el pack cloud-posture. Habilitar TotalCloud/CloudView "
+                      "(o verificar el host CSPM / rol del API user).")
+        elif tc_state in ("auth", "error"):
+            md.append(f"- ⚠️ **TC no verificable** ({tc_why}). No es ausencia de módulo confirmada.")
+        if pol_ok and tc_ok:
+            md.append("- ✅ Ambos motores disponibles: se generan todos los deliverables.")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(md) + "\n", encoding="utf-8")
+
+    if auth_fatal:
+        print("\n✗ Autenticación rechazada (HTTP 401/403) — esto NO es 'módulo faltante'.\n"
+              f"   Revisá: 1) QUALYS_POD ('{fo.pod}' es el default si copiaste .env.example) coincide con "
+              "el POD del cliente · 2) usuario/clave correctos · 3) el API user tiene 'API Access'.",
+              file=sys.stderr)
+        return 2
 
     # líneas machine-readable para el orquestador
     print(f"POL={'yes' if pol_ok else 'no'}")
