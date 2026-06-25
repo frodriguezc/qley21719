@@ -36,7 +36,8 @@ def _probe_pol(fo: QualysClient) -> tuple[str, str]:
     except Exception as e:  # noqa: BLE001
         return "error", f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
     if code in (401, 403):
-        return "auth", f"HTTP {code}: autenticación/permiso rechazado (NO es ausencia de módulo)"
+        snip = text[:140].strip().replace("\n", " ")
+        return "auth", f"HTTP {code} (auth/permiso, NO ausencia de módulo): {snip}"
     if code != 200:
         return "error", f"HTTP {code}: {text[:160].strip()}"
     low = text.lower()
@@ -53,7 +54,8 @@ def _probe_tc(cv: CloudViewClient) -> tuple[str, str]:
     except Exception as e:  # noqa: BLE001
         return "error", f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
     if code in (401, 403):
-        return "auth", f"HTTP {code}: autenticación/permiso rechazado (NO es ausencia de módulo)"
+        snip = text[:140].strip().replace("\n", " ")
+        return "auth", f"HTTP {code} (auth/permiso, NO ausencia de módulo): {snip}"
     if code != 200:
         return "error", f"HTTP {code}: {text[:160].strip()}"
     return "ok", "HTTP 200 · controls/metadata accesible"
@@ -122,7 +124,15 @@ def main(argv=None) -> int:
                       "Compliance/Audit en la suscripción (o usar un API user con ese módulo).")
         elif pol_state in ("auth", "error"):
             md.append(f"- ⚠️ **POL no verificable** ({pol_why}). No es ausencia de módulo confirmada.")
-        if tc_state == "absent":
+        if tc_state == "auth" and pol_ok:
+            # PC autenticó (200) pero CloudView rechazó las MISMAS credenciales -> NO es POD/credenciales:
+            # el tenant no tiene TotalCloud, o el API user no tiene permiso de CloudView/TotalCloud.
+            md.append("- ⚠️ **TC sin acceso (CloudView/TotalCloud):** las credenciales que **sí** funcionan "
+                      "para Policy Compliance fueron rechazadas por CloudView. **No** es un problema de "
+                      "POD/credenciales (PC funcionó). Causa probable: el tenant **no tiene TotalCloud "
+                      "suscrito**, o el **API user no tiene permiso de CloudView/TotalCloud** "
+                      "(Administration → el usuario → *Modules/Permissions*). Habilitarlo y re-correr si corresponde.")
+        elif tc_state == "absent":
             md.append("- ⚠️ **Sin TC:** no se genera el pack cloud-posture. Habilitar TotalCloud/CloudView "
                       "(o verificar el host CSPM / rol del API user).")
         elif tc_state in ("auth", "error"):

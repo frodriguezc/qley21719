@@ -65,6 +65,18 @@ def test_main_pol_ok_tc_auth_does_not_abort(tmp_path, monkeypatch, capsys):
     assert "TC=no" in out
 
 
+def test_main_pol_ok_tc_auth_message(tmp_path, monkeypatch):
+    """POL ok + TC 401 -> el reporte explica que es acceso a CloudView, NO POD/credenciales."""
+    monkeypatch.setattr(cm, "from_env", lambda: FakeFO(200, "<POLICY></POLICY>"))
+    monkeypatch.setattr(cm, "cv_from_env", lambda server=None: FakeCV(401, '{"status":401}'))
+    out = tmp_path / "0-modulos.md"
+    cm.main(["--out", str(out)])
+    txt = out.read_text()
+    assert "TC sin acceso" in txt
+    assert "CloudView" in txt
+    assert "No** es un problema de POD" in txt or "No es un problema de POD" in txt
+
+
 def test_main_both_ok(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cm, "from_env", lambda: FakeFO(200, "<POLICY></POLICY>"))
     monkeypatch.setattr(cm, "cv_from_env", lambda server=None: FakeCV(200, "{}"))
