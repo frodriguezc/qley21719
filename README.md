@@ -122,6 +122,12 @@ lo ejecutas tú**, a sabiendas, por la UI o con `subir.sh`. La herramienta nunca
 > propio permiso del usuario garantiza que no se puede tocar nada, sin depender del software. Solo
 > necesita **acceso de lectura** a Policy Compliance, al inventario de assets y a TotalCloud/CloudView.
 
+> ⚠️ **"API Access" es un permiso APARTE del rol.** En Qualys, un usuario puede tener rol Reader/Manager
+> y ver los módulos en la UI, pero **igual recibir `HTTP 401` en la API** si no tiene habilitado el
+> permiso **API Access** (Administration → el usuario → *Permissions* → "API Access"). Un 401 = problema
+> de **conexión/permiso** (POD, credenciales o API Access), **no** "el tenant no tiene el módulo" — la
+> verificación de módulos lo distingue y aborta con ese checklist en vez de generar un pack vacío.
+
 ---
 
 ## Cómo funciona
