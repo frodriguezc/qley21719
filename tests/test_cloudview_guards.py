@@ -144,6 +144,59 @@ def test_base_path_constant():
     assert cv.CV_BASE == "/cloudview-api/rest/v1"
 
 
+# -- auth gateway+JWT (hermético: se reemplaza la sesión, no toca la red) ------ #
+class _FakeResp:
+    def __init__(self, status, text="", headers=None):
+        self.status_code = status
+        self.text = text
+        self.headers = headers or {}
+
+
+class _FakeSession:
+    def __init__(self, post_resp, get_resp):
+        self.headers: dict = {}
+        self._post_resp = post_resp
+        self._get_resp = get_resp
+        self.posts: list = []
+        self.gets: list = []
+
+    def post(self, url, data=None, headers=None, timeout=None):
+        self.posts.append({"url": url, "data": data})
+        return self._post_resp
+
+    def get(self, url, params=None, timeout=None):
+        self.gets.append({"url": url, "auth": self.headers.get("Authorization")})
+        return self._get_resp
+
+
+def test_gateway_host_for_pod():
+    assert CloudViewClient("US03", "u", "p").server == "https://gateway.qg3.apps.qualys.com"
+    assert cv.gateway_for("US01") == "https://gateway.qg1.apps.qualys.com"
+
+
+def test_jwt_auth_flow_sets_bearer_and_targets_auth():
+    c = CloudViewClient("US03", "u", "p")
+    jwt = "aaa.bbb." + "c" * 50          # 2 puntos + largo -> "parece JWT"
+    c.sess = _FakeSession(_FakeResp(201, jwt), _FakeResp(200, "{}"))
+    code, _ = c.cv_get("/aws/connectors")
+    assert code == 200
+    # se autenticó con UN POST a /auth, mandando las credenciales
+    assert len(c.sess.posts) == 1 and c.sess.posts[0]["url"].endswith("/auth")
+    assert c.sess.posts[0]["data"]["username"] == "u"
+    # el GET de datos llevó el Bearer y fue al gateway + cloudview-api
+    g = c.sess.gets[0]
+    assert g["auth"] == f"Bearer {jwt}"
+    assert g["url"] == "https://gateway.qg3.apps.qualys.com/cloudview-api/rest/v1/aws/connectors"
+
+
+def test_jwt_auth_failure_propagates_and_skips_data_get():
+    c = CloudViewClient("US03", "u", "p")
+    c.sess = _FakeSession(_FakeResp(401, '{"status":401}'), _FakeResp(200, "{}"))
+    code, text = c.cv_get("/aws/connectors")
+    assert code == 401              # la auth falló -> se propaga como (401, body)
+    assert c.sess.gets == []        # nunca se hizo el GET de datos
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

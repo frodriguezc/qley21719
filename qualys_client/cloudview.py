@@ -4,26 +4,27 @@ Motor SEPARADO del de Policy Compliance (ver DESIGN-cloud-posture.md). Namespace
 `cloudview-api/rest/v1` (REST JSON), NO la XML API `api/2.0|4.0/fo` que cubre QualysClient.
 
 Garantía read-only **horneada y allow-list-only** (rechaza por defecto, no deny-list):
-el único método de red es `cv_get` (GET) y el path debe matchear el set enumerado de
-endpoints de LECTURA (controls metadata, connectors, groups, evaluations, assessment
+el único método de red de DATOS es `cv_get` (GET) y el path debe matchear el set enumerado
+de endpoints de LECTURA (controls metadata, connectors, groups, evaluations, assessment
 report list/download). Cualquier otro path —o cualquier intento de mutación (connector
 run/create, report create)— levanta QualysReadOnlyError ANTES de tocar la red. No hay
-método POST/PUT/DELETE: no hay forma de mutar el tenant.
+método público POST/PUT/DELETE de datos: no hay forma de mutar el tenant.
+
+Auth: **Qualys API Gateway + JWT** (NO Basic). CloudView/TotalCloud NO se sirve ni desde el
+host FO (`qualysapi.*` -> 404) ni desde el portal (`qualysguard.*` -> 401 con Basic). Va por
+el **API Gateway** `gateway.<seg>.apps.qualys.*`: se obtiene un token con `POST /auth`
+(form-urlencoded username/password, `token=true`) y se usan los endpoints con
+`Authorization: Bearer <jwt>`. El único POST que hace el cliente es ese `/auth` (emisión de
+token; NO muta el tenant); todos los datos son GET allow-list-only. El password nunca se loguea.
+
+> VERIFICADO LIVE US03 (2026-06): `POST gateway.qg3/auth` -> 201 + JWT; `/aws|azure|gcp/connectors`
+> -> 200. (El approach anterior —Basic contra `qualysguard.qg3`— daba 401 contra un tenant real;
+> el "200" histórico era un artefacto y se corrigió.) `controls/metadata/list` puede dar 401 aun con
+> JWT válido si el API user no tiene el permiso de control-library de CloudView (es otro permiso);
+> el harvest solo lo consulta cuando hay connectors -> se verifica en un tenant con cuentas cloud.
 
 Endpoints verificados vs la coleccion Postman v1.23.0.0 + la guia TotalCloud/CloudView API
 vigente (docs.qualys.com/en/tc/api, jun-2026); ver mapping/platform_coverage.yaml `cspm_api`.
-Auth: HTTP Basic + X-Requested-With.
-
-CAVEATS (mapping/platform_coverage.yaml `cspm_api.caveats`):
-  - El host del gateway CSPM puede diferir del host FO por POD -> `server` es override-able;
-    por defecto reutiliza el host de PODS (verificar contra el tenant si CSPM usa otro gateway).
-  - Rol read-only (§7 #8, RESUELTO a nivel doc — Reporting_Permission.htm): un sub-user con rol
-    READER VE reporting controls/connectors y puede LEER reportes; CREAR/correr reportes (el POST
-    de §3b, human-gate) requiere la Reporting Permission asignada por un Manager (rol pre-definido
-    '- only Reports'). Este cliente solo emite GETs -> un Reader basta para la herramienta; el
-    invariante de ROL para el `create` es del tenant. Verify live 2026-06-25 con MANAGER: los GETs
-    read-only (controls + AWS/GCP evaluations) dan 200; el run Reader-scoped queda PENDIENTE (aún no
-    hay un API user Reader provisionado -> lo cierra scripts/verify_tenant.py --user <reader>).
 """
 from __future__ import annotations
 
@@ -33,10 +34,29 @@ import time
 
 import requests
 
-from .client import (PODS, QualysReadOnlyError, _read_dotenv,
+from .client import (QualysReadOnlyError, _read_dotenv,
                      _retry_after_seconds, _throttle_note)
 
 CV_BASE = "/cloudview-api/rest/v1"
+
+# Host del API Gateway de Qualys por POD: CloudView/TotalCloud van por acá (con JWT). El host FO
+# (qualysapi.*) NO sirve cloudview-api; el portal (qualysguard.*) lo rechaza con JWT/Basic.
+# VERIFICADO LIVE US03 (2026-06). Otros PODs siguen el patrón gateway.<seg>.apps.qualys.<tld>
+# (confirmar por POD; con `server=` se puede forzar el host).
+GATEWAYS = {
+    "US01": "https://gateway.qg1.apps.qualys.com",
+    "US02": "https://gateway.qg2.apps.qualys.com",
+    "US03": "https://gateway.qg3.apps.qualys.com",
+    "US04": "https://gateway.qg4.apps.qualys.com",
+    "EU01": "https://gateway.qg1.apps.qualys.eu",
+    "EU02": "https://gateway.qg2.apps.qualys.eu",
+    "EU03": "https://gateway.qg3.apps.qualys.eu",
+    "IN01": "https://gateway.qg1.apps.qualys.in",
+    "CA01": "https://gateway.qg1.apps.qualys.ca",
+    "AE01": "https://gateway.qg1.apps.qualys.ae",
+    "UK01": "https://gateway.qg1.apps.qualys.co.uk",
+    "AU01": "https://gateway.qg1.apps.qualys.com.au",
+}
 
 # Allow-list de paths de LECTURA (relativos a CV_BASE). Si ninguno matchea -> se rechaza.
 # Verificados vs Postman v1.23.0.0 + guia tc/api (jun-2026): controls/metadata, {aws|azure|gcp}
@@ -61,48 +81,80 @@ _CV_READ_PATTERNS = tuple(re.compile(p) for p in (
 _MAX_RETRY = 5
 
 
-def cspm_server(fo_server: str) -> str:
-    """Host CSPM (CloudView/TotalCloud) a partir del host FO. CloudView NO se sirve desde el host
-    FO (`qualysapi.*` -> 404 en cloudview-api): va por el host del portal `qualysguard.<seg>`.
-    Convención: `qualysapi.<seg>.apps.qualys.*` -> `qualysguard.<seg>.apps.qualys.*`. Override con `server=`.
-    VERIFICADO LIVE en US03 (jun-2026) con credenciales válidas: controls/metadata/list -> HTTP 200
-    en `qualysguard.qg3.apps.qualys.com`; `gateway.qg3` dio 401 y el host FO `qualysapi.qg3` dio 404.
-    Para otros PODs, confirmar (el patrón del portal qualysguard.<seg> es el esperado)."""
-    return fo_server.replace("://qualysapi.", "://qualysguard.", 1)
+def gateway_for(pod: str) -> str | None:
+    """Host del API Gateway (CloudView/TotalCloud, JWT) para un POD. None si no se conoce."""
+    return GATEWAYS.get((pod or "").upper())
 
 
 class CloudViewClient:
-    """Cliente CSPM read-only. Exposición mínima: `cv_get` (GET allow-list-only) + helpers."""
+    """Cliente CSPM read-only (API Gateway + JWT). Exposición de datos mínima: `cv_get`
+    (GET allow-list-only) + helpers. El único no-GET es la auth (`POST /auth`)."""
 
     def __init__(self, pod: str, user: str, password: str,
                  server: str | None = None, timeout: int = 120, debug: bool = False) -> None:
-        fo = PODS.get((pod or "").upper())
-        base = server or (cspm_server(fo) if fo else None)
+        base = server or gateway_for(pod)
         if not base:
-            raise ValueError(f"POD desconocido: {pod!r}. Conocidos: {sorted(PODS)} (o pasa `server=`).")
+            raise ValueError(
+                f"POD desconocido: {pod!r}. Conocidos: {sorted(GATEWAYS)} (o pasa `server=`).")
         self.pod = (pod or "").upper()
         self.server = base.rstrip("/")
         self.timeout = timeout
         self.debug = debug
-        self.call_count = 0
+        self.call_count = 0          # cuenta GETs de datos (la auth no cuenta)
+        self._user = user
+        self._password = password
+        self._token: str | None = None
         self.sess = requests.Session()
-        self.sess.auth = (user, password)
         self.sess.headers.update({
             "X-Requested-With": "qley21719 (read-only)",
             "Accept": "application/json",
         })
 
-    # -- transporte con backoff reactivo (igual filosofía que QualysClient) -- #
-    def _request(self, url: str, params=None, _retry: int = 0) -> requests.Response:
+    # -- auth: API Gateway + JWT (único POST; NO muta el tenant) -------------- #
+    def _authenticate(self) -> requests.Response | None:
+        """POST /auth -> JWT. Setea `Authorization: Bearer` y devuelve None si OK; si el gateway
+        rechaza (p.ej. 401), devuelve la Response para que el caller la propague como (code, text)."""
+        resp = self.sess.post(
+            self.server + "/auth",
+            data={"username": self._user, "password": self._password, "token": "true"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=self.timeout,
+        )
+        token = (resp.text or "").strip()
+        if resp.status_code in (200, 201) and token.count(".") == 2 and len(token) > 40:
+            self._token = token
+            self.sess.headers["Authorization"] = f"Bearer {token}"
+            return None
+        if self.debug:
+            print(f"[cloudview] auth falló: HTTP {resp.status_code}", file=sys.stderr)
+        return resp
+
+    def _ensure_auth(self) -> requests.Response | None:
+        """Asegura un token. None si ya hay/se obtuvo; la Response fallida si la auth falló."""
+        if self._token is not None:
+            return None
+        return self._authenticate()
+
+    # -- transporte con backoff reactivo + re-auth ante token vencido -------- #
+    def _request(self, url: str, params=None, _retry: int = 0,
+                 _reauthed: bool = False) -> requests.Response:
+        failed = self._ensure_auth()
+        if failed is not None:                       # auth rechazada -> propagar tal cual
+            return failed
         resp = self.sess.get(url, params=params, timeout=self.timeout)
         self.call_count += 1
+        # token vencido a mitad de corrida -> re-autenticar UNA vez y reintentar
+        if resp.status_code == 401 and not _reauthed:
+            self._token = None
+            self.sess.headers.pop("Authorization", None)
+            return self._request(url, params, _retry, _reauthed=True)
         if resp.status_code in (409, 429) and _retry < _MAX_RETRY:
             wait = _retry_after_seconds(resp, _retry)
             if self.debug:
                 print(f"[cloudview] {_throttle_note(resp)} -> sleep {wait}s "
                       f"(retry {_retry + 1}/{_MAX_RETRY})", file=sys.stderr)
             time.sleep(wait)
-            return self._request(url, params, _retry + 1)
+            return self._request(url, params, _retry + 1, _reauthed)
         return resp
 
     # -- CloudView REST (read-only, allow-list-only) ------------------------- #

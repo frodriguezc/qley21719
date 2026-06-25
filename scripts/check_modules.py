@@ -47,16 +47,23 @@ def _probe_pol(fo: QualysClient) -> tuple[str, str]:
 
 
 def _probe_tc(cv: CloudViewClient) -> tuple[str, str]:
-    """Clasifica TC probando controls/metadata/list (CSPM)."""
-    try:
-        code, text = cv.list_controls({"pageSize": 1})
-    except Exception as e:  # noqa: BLE001
-        return "error", f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
-    if code in (401, 403):
-        return "auth", f"HTTP {code}: autenticación/permiso rechazado (NO es ausencia de módulo)"
-    if code != 200:
-        return "error", f"HTTP {code}: {text[:160].strip()}"
-    return "ok", "HTTP 200 · controls/metadata accesible"
+    """Clasifica TC probando `<prov>/connectors` (CSPM, vía gateway+JWT). connectors responde 200
+    cuando hay acceso a CloudView aunque no haya cuentas conectadas (a diferencia de
+    controls/metadata/list, que puede dar 401 por un permiso de control-library aparte)."""
+    last = ("error", "sin respuesta del gateway CSPM")
+    for prov in ("aws", "azure", "gcp"):
+        try:
+            code, text = cv.list_connectors(prov, {"pageNo": 0, "pageSize": 1})
+        except Exception as e:  # noqa: BLE001
+            return "error", f"error de cliente: {type(e).__name__}: {str(e)[:120]}"
+        if code == 200:
+            return "ok", f"HTTP 200 · CloudView accesible ({prov}/connectors)"
+        if code in (401, 403):
+            snip = text[:120].strip().replace("\n", " ")
+            last = ("auth", f"HTTP {code} (auth/permiso, NO ausencia de módulo): {snip}")
+        else:
+            last = ("error", f"HTTP {code}: {text[:140].strip()}")
+    return last
 
 
 def main(argv=None) -> int:
