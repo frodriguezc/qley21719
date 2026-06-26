@@ -243,7 +243,7 @@ def _run_mandate(client, body: dict, label: str, log) -> dict:
         log.info(f"{label} mandate create FAILED http={code} :: {text[:200]}")
         return {"ok": False, "stage": "create", "http": code, "detail": text[:300]}
     rid = _first(json.loads(text) if text.strip().startswith("{") else {}, _REPORT_ID_KEYS)
-    log.info(f"{label} mandate creado reportId={rid or '(s/id)'} — descargá el PDF desde consola "
+    log.info(f"{label} mandate creado reportId={rid or '(s/id)'} — descarga el PDF desde la consola "
              f"(Reports) si el tenant no expone download por API")
     return {"ok": True, "report_id": rid, "note": "download del mandate vía consola"}
 
@@ -376,7 +376,7 @@ def main(argv=None, client=None) -> int:
                 tag = "✓" if ok else "✗"
                 extra = ""
                 if not ok and prov == "oci":
-                    extra = "  (⚠️ OCI en reportes no ejercitado en el smoke → revisá; fallback: consola)"
+                    extra = "  (⚠️ OCI en reportes no ejercitado en el smoke → revisa; fallback: consola)"
                 print(f"  [{tag}] {label} {kind}{(' -> ' + r.get('path')) if r.get('path') else ''}"
                       f"{extra}", flush=True)
                 summary.append({"label": label, "kind": kind, **r})
@@ -388,7 +388,7 @@ def main(argv=None, client=None) -> int:
     log.info(f"done jobs={len(summary)} ok={okc} planned={plan} "
              f"gets={client.call_count} posts={client.mutations} out={run_dir}")
     if not args.run:
-        print(f"\n[DRY-RUN] {plan} reporte(s) en el plan. Re-corré con --run para crearlos. "
+        print(f"\n[DRY-RUN] {plan} reporte(s) en el plan. Re-corre con --run para crearlos. "
               f"({client.call_count} GETs, 0 POSTs)", flush=True)
     else:
         print(f"\n[RUN] {okc}/{len(summary)} OK. GETs={client.call_count} POSTs={client.mutations}. "
