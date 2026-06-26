@@ -26,7 +26,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from cloud_pack.generator import build_pack, load_spec, parse_controls, parse_evaluations  # noqa: E402
+from cloud_pack.generator import (  # noqa: E402
+    _html_to_text, build_pack, load_spec, parse_controls, parse_evaluations)
 from scripts._runtime import (  # noqa: E402
     resolve_run_dir, preflight_writable, link_latest, setup_run_log)
 
@@ -157,7 +158,33 @@ def _run_connector_hint(provider: str, account: str) -> str:
     return "    → Run Connector: consola → TotalCloud → Connectors → hover → Actions → Run Connector."
 
 
-def _run_one(client, spec, provider, account, out_base, log=None):
+def _fetch_control_metadata(client, page_size=500, max_pages=20) -> dict:
+    """Best-effort: {cid: remediation(texto)} desde controls/metadata/list (campo manualRemediation,
+    HTML->texto). Es la librería GLOBAL de controles CSPM (~1.4k, todos los providers) -> se baja una
+    vez por corrida y se joinea por cid == controlId de las evaluations. Read-only (GET). 401/403/
+    error/schema viejo -> {} (la columna `remediation` queda vacía; la metadata de control es un
+    permiso aparte que no todo tenant tiene)."""
+    out: dict = {}
+    try:
+        for page in range(max_pages):
+            code, text = client.list_controls(params={"pageSize": page_size, "pageNo": page})
+            if code != 200:
+                break
+            ctrls = (json.loads(text) or {}).get("control") or []
+            if not ctrls:
+                break
+            for it in ctrls:
+                cid = str(it.get("cid", "")).strip()
+                if cid:
+                    out[cid] = _html_to_text(it.get("manualRemediation") or "")
+            if len(ctrls) < page_size:
+                break
+    except Exception:
+        return out
+    return out
+
+
+def _run_one(client, spec, provider, account, out_base, log=None, remediation=None):
     """Corre el pipeline para una cuenta: fetch evaluations -> classify -> emit. Read-only.
     Loguea de forma DISTINGUIBLE cuál de los 3 casos de posture ocurrió (auth/empty/not_evaluated/
     ok), por provider/cuenta, tanto a stdout como al run.log."""
@@ -178,7 +205,8 @@ def _run_one(client, spec, provider, account, out_base, log=None):
         if log is not None:
             log.info(f"{provider}/{account} run_connector_hint :: {hint.strip()}")
     out_dir = str(Path(out_base) / provider / (account or "default"))
-    stats = build_pack(controls, posture, spec, out_dir, provider=provider, account=account)
+    stats = build_pack(controls, posture, spec, out_dir, provider=provider, account=account,
+                       remediation=remediation)
     print(f"  [{provider}/{account}] {stats['controls']} ctrl · {stats['evaluated']} eval · "
           f"{stats['fails']} FAIL · {stats['gaps']} a revisar · {stats['by_family']}", flush=True)
     return {"provider": provider, "account": account, "out_dir": out_dir,
@@ -237,6 +265,13 @@ def main(argv=None) -> int:
         client = cv_from_env(server=args.server)
     print(f"[cloud] host={client.server}", flush=True)
 
+    # Metadata global de controles (remediación) — una vez por corrida; best-effort (puede 401).
+    remediation = _fetch_control_metadata(client)
+    print(f"[cloud] metadata: {len(remediation)} control(es) con remediación"
+          if remediation else "[cloud] metadata de control no accesible — columna 'remediation' vacía",
+          flush=True)
+    log.info(f"control_metadata remediation_controls={len(remediation)}")
+
     providers = ["aws", "azure", "gcp", "oci"] if args.provider == "all" else [args.provider]
     ran = 0
     for prov in providers:
@@ -260,7 +295,7 @@ def main(argv=None) -> int:
             continue
         for acct in accounts:
             try:
-                r = _run_one(client, spec, prov, acct, out_base, log=log)
+                r = _run_one(client, spec, prov, acct, out_base, log=log, remediation=remediation)
                 log.info(f"{prov}/{acct} posture={r['posture_state']} controls={r['controls']} "
                          f"evaluated={r['evaluated']} fails={r['fails']} gaps={r['gaps']}")
                 ran += 1

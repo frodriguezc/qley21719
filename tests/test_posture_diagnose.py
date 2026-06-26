@@ -177,6 +177,34 @@ def test_run_one_threadea_estado_auth():
     assert r["posture_state"] == "auth"
 
 
+# ------------------------------------------------- control metadata -> remediación (mapping.csv)
+
+class FakeMetaClient:
+    """Fake con list_controls(params) paginado: pages = [(code, text), ...] por pageNo."""
+    def __init__(self, pages):
+        self._pages = pages
+        self.calls = 0
+
+    def list_controls(self, params=None):
+        self.calls += 1
+        i = (params or {}).get("pageNo", 0)
+        return self._pages[i] if i < len(self._pages) else (200, '{"control":[]}')
+
+
+def test_fetch_control_metadata_builds_cid_to_remediation():
+    page0 = json.dumps({"control": [
+        {"cid": 40001, "manualRemediation": "<p>Hacer <b>X</b></p><ol><li>paso1</li></ol>"},
+        {"cid": 40037, "manualRemediation": "texto plano"}]})
+    m = cpp._fetch_control_metadata(FakeMetaClient([(200, page0)]))
+    assert "Hacer X" in m["40001"] and "<" not in m["40001"]    # HTML -> texto
+    assert m["40037"] == "texto plano"
+
+
+def test_fetch_control_metadata_auth_failsoft():
+    # 401 (permiso de metadata aparte) -> {} (la columna queda vacía, no rompe)
+    assert cpp._fetch_control_metadata(FakeMetaClient([(401, "unauth")])) == {}
+
+
 # --------------------------------------------------------- Run Connector hint (audit jun-2026)
 
 def test_run_connector_hint_aws_azure_gcp_have_api():
