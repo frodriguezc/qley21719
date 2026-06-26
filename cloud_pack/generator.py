@@ -213,8 +213,9 @@ def _write_gaps(path: str, gaps: list[dict], spec: dict) -> None:
 # scope). VERIFICADO (jun-2026) contra la guía TotalCloud/CloudView API vigente
 # (docs.qualys.com/en/tc/api/reports/create_report.htm): `cloudType` admite AWS, Azure, GCP y OCI.
 # La colección Postman pineada v1.23.0.0 (2022) enumeraba solo AWS/Azure/GCP; OCI se agregó después
-# (connectors 3.0 + evaluations v1 `/oci/evaluations/?tenantId=`). El smoke US03 no ejercitó OCI en
-# reportes -> se deja un callout de "confirma contra tu tenant / usa consola" para OCI.
+# (connectors 3.0 + evaluations v1 `/oci/evaluations/?tenantId=`). OCI **confirmado por API** (audit
+# jun-2026, live read-only US03): `reports/policies?cloudType=OCI` -> 200 con el CIS OCI Foundations
+# policy. El único paso sin API es la descarga del Mandate (consola, todos los providers).
 _CLOUD_REPORT_PARAMS = {
     "aws":   ("AWS",   "account id"),
     "azure": ("AZURE", "subscription id"),
@@ -333,6 +334,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
         "title":"Ley 21.719 (mandate afín) - <cliente>" }'
 ```
 
+> ⚠️ **Descarga del Mandate Report = solo consola (sin API, todos los providers).** La familia
+> `/reports/*` NO expone endpoint de descarga (audit jun-2026: 8 endpoints, ninguno de download;
+> solo el *Assessment* baja por API, paso A). Para bajar el PDF del mandate:
+>   1. Consola del POD → módulo **TotalCloud** (o CloudView).
+>   2. Menú **Reports** (Reporting).
+>   3. Ubicar el reporte por su **título** (`Ley 21.719 (mandate afín) - <cliente>`) o su `reportId`.
+>   4. Esperar estado **Completed** → acción **Download** → PDF.
+>
 > ✅ **Verbo confirmado** (guía TotalCloud/CloudView API vigente, jun-2026 —
 > `docs.qualys.com/en/tc/api/reports/create_report.htm` / `.../reports/update_report.htm`):
 > **crear** el reporte es **`POST /cloudview-api/rest/v1/reports`** y **actualizar**
@@ -340,8 +349,10 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 > (error de autoría). Los de `/report/assessment/*` son **POST** (create/rerun) y **GET**
 > (list/download).
 >
-> **OCI:** la guía vigente admite `cloudType` **OCI** en reportes (se agregó tras v1.23.0.0); el
-> smoke no lo ejercitó → confirma contra tu tenant OCI; si no responde, usa la **consola** (paso 3).
+> ✅ **OCI confirmado por API** (audit jun-2026, live read-only): `reports/policies?cloudType=OCI`
+> responde 200 con el *CIS Oracle Cloud Infrastructure Foundation Benchmark* → crear el reporte OCI
+> por API funciona igual que AWS/Azure/GCP. El único paso sin API es la **descarga del Mandate**
+> (consola, todos los providers — ver arriba).
 
 **Docs (Qualys):** [Reports](https://docs.qualys.com/en/cloudview/latest/reports/reports.htm) ·
 [Assessment Report](https://docs.qualys.com/en/cloudview/latest/reports/assessment_report.htm) ·
@@ -361,8 +372,8 @@ def _cloud_report_section(provider: str, account: str) -> str:
         cloud_type, scope_label = _CLOUD_REPORT_PARAMS[p]
         provider_path = p
         scope_id = account or f"<{scope_label}>"
-        reports = ("Assessment ✅ · Mandate ✅ (OCI soportado en la guía API vigente; "
-                   "no ejercitado en el smoke — confirma contra tu tenant)"
+        reports = ("Assessment ✅ · Mandate ✅ (OCI confirmado por API: cloudType=OCI aceptado; "
+                   "existe el CIS OCI Foundations policy)"
                    if p == "oci" else "Assessment ✅ · Mandate ✅")
     else:
         provider_path = "<aws|azure|gcp|oci>"
@@ -374,11 +385,12 @@ def _cloud_report_section(provider: str, account: str) -> str:
     oci_warn = ""
     if p == "oci":
         oci_warn = (
-            "> ⚠️ **OCI:** la guía TotalCloud/CloudView API **vigente** admite `cloudType` **OCI** en "
-            "reportes y expone connectors/evaluations OCI (`/oci/evaluations/?tenantId=`, que esta "
-            "herramienta ya lee); OCI **no estaba** en la colección Postman v1.23.0.0 pineada y **el "
-            "smoke no lo ejercitó en reportes** → confirma contra tu tenant OCI; si no responde, usa "
-            "el flujo de **consola** (paso 3).\n\n")
+            "> ✅ **OCI confirmado por API** (audit jun-2026, live read-only): el API de reportes "
+            "acepta `cloudType=OCI` (`reports/policies?cloudType=OCI` → 200 con el *CIS Oracle Cloud "
+            "Infrastructure Foundation Benchmark*) y expone connectors/evaluations OCI "
+            "(`/oci/evaluations/?tenantId=`, que esta herramienta ya lee). Crear el reporte OCI por "
+            "API funciona igual que AWS/Azure/GCP; el único paso sin API es la **descarga del "
+            "Mandate** (consola, todos los providers — ver §B).\n\n")
 
     return (_CLOUD_REPORT_TEMPLATE
             .replace("__OCI_WARN__", oci_warn)

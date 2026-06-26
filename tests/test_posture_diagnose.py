@@ -177,6 +177,21 @@ def test_run_one_threadea_estado_auth():
     assert r["posture_state"] == "auth"
 
 
+# --------------------------------------------------------- Run Connector hint (audit jun-2026)
+
+def test_run_connector_hint_aws_azure_gcp_have_api():
+    for p in ("aws", "azure", "gcp"):
+        h = cpp._run_connector_hint(p, "acct")
+        assert "POR API" in h
+        assert f"/qps/rest/3.0/run/am/{p}assetdataconnector/" in h
+
+
+def test_run_connector_hint_oci_is_gui_only():
+    h = cpp._run_connector_hint("oci", "ocid1.tenancy.oc1..x")
+    assert "NO tiene API" in h and "consola" in h
+    assert "/qps/rest/3.0/run/am/" not in h          # OCI no expone el run por API
+
+
 # --------------------------------------------------------------------------------------
 # Runner standalone (como en CI: `python tests/test_posture_diagnose.py`, sin pytest)
 # --------------------------------------------------------------------------------------
