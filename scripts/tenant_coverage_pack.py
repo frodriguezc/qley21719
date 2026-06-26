@@ -45,10 +45,30 @@ from scripts._runtime import (  # noqa: E402
 # --------------------------------------------------------------------------- #
 # Lectura del tenant (READ-ONLY)
 # --------------------------------------------------------------------------- #
-def _fleet_os(client: QualysClient, max_hosts: int, page: int = 1000) -> tuple[Counter, int, int]:
-    """Pagina FO asset/host (action=list) y devuelve (Counter de OS, total_hosts, sin_os)."""
-    os_counts: Counter = Counter()
-    total = no_os = 0
+def _is_authenticated(tracking_method: str, last_auth_scan: str) -> bool:
+    """Un host tiene SO CONFIABLE si está autenticado: Cloud Agent (el SO lo reporta el agente
+    local = autoritativo) o con un scan autenticado previo (LAST_VM_AUTH_SCANNED_DATE poblado).
+
+    El resto es **fingerprint REMOTO** (tracking IP/DNS sin auth): Qualys infiere el SO por firmas
+    de red y devuelve un valor AMBIGUO — a veces una lista de candidatos separada por '/' (p.ej.
+    'EulerOS / Ubuntu / Fedora / …', 'Windows 2016/2019/10'). Verificado en sinacofi: el 100% de
+    los SO con '/' eran hosts sin autenticar. Además esos hosts NO son evaluables por Policy
+    Compliance hasta autenticarlos → su SO no debe disparar una recomendación de import dura."""
+    return (tracking_method or "").strip().lower() == "cloud agent" or bool((last_auth_scan or "").strip())
+
+
+def _fleet_os(client: QualysClient, max_hosts: int, page: int = 1000) -> dict:
+    """Pagina FO asset/host (action=list, details=All) y separa el SO por estado de autenticación.
+
+    Devuelve un dict 'fleet':
+      total                    hosts barridos
+      os_auth / os_unauth      Counter de SO {autenticado (confiable) / sin auth (fingerprint ambiguo)}
+      n_auth / n_unauth        hosts autenticados / sin autenticar (tengan SO o no)
+      no_os_auth / no_os_unauth  hosts sin string de SO, por estado
+    """
+    os_auth: Counter = Counter()
+    os_unauth: Counter = Counter()
+    total = n_auth = n_unauth = no_os_auth = no_os_unauth = 0
     params = {"action": "list", "details": "All", "truncation_limit": str(min(page, max_hosts))}
     while total < max_hosts:
         http, text = client.fo_get("/api/5.0/fo/asset/host/", params)
@@ -58,10 +78,20 @@ def _fleet_os(client: QualysClient, max_hosts: int, page: int = 1000) -> tuple[C
         for h in root.findall(".//HOST"):
             total += 1
             os_txt = (h.findtext("OS") or "").strip()
-            if os_txt:
-                os_counts[os_txt] += 1
+            authed = _is_authenticated(h.findtext("TRACKING_METHOD") or "",
+                                       h.findtext("LAST_VM_AUTH_SCANNED_DATE") or "")
+            if authed:
+                n_auth += 1
+                if os_txt:
+                    os_auth[os_txt] += 1
+                else:
+                    no_os_auth += 1
             else:
-                no_os += 1
+                n_unauth += 1
+                if os_txt:
+                    os_unauth[os_txt] += 1
+                else:
+                    no_os_unauth += 1
         print(f"      … {total} hosts barridos", flush=True)
         warn = root.find(".//WARNING/URL")
         if warn is None or not (warn.text or "").strip():
@@ -71,7 +101,9 @@ def _fleet_os(client: QualysClient, max_hosts: int, page: int = 1000) -> tuple[C
         if not id_min:
             break
         params["id_min"] = id_min
-    return os_counts, total, no_os
+    return {"total": total, "os_auth": os_auth, "os_unauth": os_unauth,
+            "n_auth": n_auth, "n_unauth": n_unauth,
+            "no_os_auth": no_os_auth, "no_os_unauth": no_os_unauth}
 
 
 def _fleet_software(client: QualysClient, max_hosts: int, page: int = 500) -> set[str]:
@@ -137,25 +169,32 @@ def _any(patterns, text) -> bool:
     return any(re.search(p, text, re.I) for p in (patterns or []))
 
 
-def reconcile(catalog: dict, os_counts: Counter, software: set[str],
+def reconcile(catalog: dict, os_auth: Counter, os_unauth: Counter, software: set[str],
               policies: list[tuple[str, str]]) -> dict:
-    """Cruza el catálogo curado con la flota (os/software) y las policies importadas (title)."""
+    """Cruza el catálogo curado con la flota (SO autenticado/ambiguo + software) y las policies
+    importadas (title).
+
+    La PRESENCIA confiable que dispara una recomendación dura [A] se mide SOLO sobre el SO
+    autenticado (`os_auth`). El SO ambiguo (`os_unauth`, fingerprint remoto) se cuenta aparte en
+    `fleet_hosts_unauth` y se reporta como 'posible — confirmar autenticando' [A'], no como import
+    obligado (puede ser impreciso y no es evaluable por PC sin autenticar)."""
     targets = catalog["targets"]
-    titles = [t for _, t in policies]
 
     rows = []
     for tg in targets:
-        # ¿presente en la flota?
-        fleet_hosts = sum(n for osx, n in os_counts.items() if _any(tg.get("os_match"), osx))
+        # ¿presente en la flota, con SO CONFIABLE? (esto dispara [A])
+        fleet_auth = sum(n for osx, n in os_auth.items() if _any(tg.get("os_match"), osx))
+        # ¿visto solo en hosts SIN autenticar? (fingerprint ambiguo -> [A'] "confirmar")
+        fleet_unauth = sum(n for osx, n in os_unauth.items() if _any(tg.get("os_match"), osx))
         # match de software por nombre individual (no contra un blob unido -> evita cruces falsos)
         sw_hit = any(_any(tg.get("software_match"), s) for s in software)
-        present_in_fleet = fleet_hosts > 0 or sw_hit
+        present_in_fleet = fleet_auth > 0 or sw_hit
         # ¿ya importado? (match de title contra las policies del tenant)
         imported_ids = [pid for pid, ti in policies if _any(tg.get("title_match"), ti)]
         rows.append({
             "key": tg["key"], "group": tg["group"], "kind": tg["kind"],
             "benchmark": tg["benchmark"], "pillars": tg.get("pillars", []),
-            "fleet_hosts": fleet_hosts, "sw_hit": sw_hit,
+            "fleet_hosts": fleet_auth, "fleet_hosts_unauth": fleet_unauth, "sw_hit": sw_hit,
             "present_in_fleet": present_in_fleet,
             "imported_ids": imported_ids, "imported": bool(imported_ids),
         })
@@ -165,18 +204,28 @@ def reconcile(catalog: dict, os_counts: Counter, software: set[str],
 # --------------------------------------------------------------------------- #
 # Emisión de faltantes.txt + subir.sh
 # --------------------------------------------------------------------------- #
-def _write_faltantes(path: Path, catalog: dict, rec: dict, os_counts: Counter, total_hosts: int,
-                     no_os: int, software_seen: bool, present_sources: list[dict],
+def _write_faltantes(path: Path, catalog: dict, rec: dict, fleet: dict,
+                     software_seen: bool, present_sources: list[dict],
                      pod: str, name: str, now: str) -> None:
     L = []
+    os_auth: Counter = fleet["os_auth"]
+    os_unauth: Counter = fleet["os_unauth"]
+    total, n_auth, n_unauth = fleet["total"], fleet["n_auth"], fleet["n_unauth"]
     L += [f"COBERTURA TÉCNICA — Ley 21.719 — POD {pod} — {now}",
           f"Policy: {name}", "=" * 72, ""]
-    L += [f"Flota: {total_hosts} hosts barridos ({no_os} sin SO detectado / sin auth scan).", ""]
-    L += ["SO detectado en la flota (top):"]
-    for osx, n in os_counts.most_common(40):
+    L += [f"Flota: {total} hosts barridos · {n_auth} autenticados (SO confiable) · "
+          f"{n_unauth} sin autenticar (SO ambiguo / no evaluable por PC).", ""]
+    L += ["SO CONFIABLE — Cloud Agent o scan autenticado (BASE de las recomendaciones [A]/[B]):"]
+    for osx, n in os_auth.most_common(40):
         L.append(f"  {n:4d}  {osx}")
-    if not os_counts:
-        L.append("  (ninguno — la flota no tiene SO resuelto; correr auth scans)")
+    if not os_auth:
+        L.append("  (ninguno — la flota no tiene SO autenticado; instala Cloud Agent o corre auth scans)")
+    if os_unauth:
+        L += ["",
+              "SO AMBIGUO — hosts SIN autenticar (fingerprint remoto; PUEDE listar varios candidatos",
+              "             separados por '/'; NO evaluable por Policy Compliance hasta autenticar):"]
+        for osx, n in os_unauth.most_common(40):
+            L.append(f"  {n:4d}  {osx}")
     L += ["", "-" * 72, "Benchmarks CIS YA importados que aplican (fuentes del policy.xml):"]
     if present_sources:
         for s in present_sources:
@@ -186,6 +235,10 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, os_counts: Counter, t
 
     detected_missing = [r for r in rec["rows"]
                         if r["present_in_fleet"] and not r["imported"] and r["kind"] == "os"]
+    # OS-kind targets vistos SOLO en hosts sin autenticar (no confirmados): posibles, a confirmar.
+    possible_unauth = [r for r in rec["rows"]
+                       if not r["imported"] and r["kind"] == "os"
+                       and not r["present_in_fleet"] and r.get("fleet_hosts_unauth", 0) > 0]
     # non-OS (db/middleware/container/infra) no importados: si se detectó por software -> "detectado";
     # si no -> "verificar manualmente" (Qualys no siempre fingerprintea el motor sin CSAM/auth scan).
     verify = [r for r in rec["rows"] if not r["imported"] and r["kind"] != "os"]
@@ -194,12 +247,24 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, os_counts: Counter, t
 
     L += ["", "=" * 72,
           "FALTAN IMPORTAR (Import from Library, human-gate) para cobertura completa:", ""]
-    L += ["[A] Detectados en la flota por SO, sin benchmark importado:"]
+    if n_unauth:
+        L += [f"  ⚠ {n_unauth} hosts SIN autenticar: su SO es un fingerprint remoto (puede ser impreciso)",
+              "    y NO son evaluables por Policy Compliance. Autentícalos (Cloud Agent o scan con",
+              "    credenciales) para confirmar el SO e incluirlos. [A]/[B] salen solo del SO confiable;",
+              "    lo visto solo sin autenticar va a [A'] como 'posible — confirmar'.", ""]
+    L += ["[A] Detectados en la flota por SO CONFIABLE (auth), sin benchmark importado:"]
     if detected_missing:
         for r in sorted(detected_missing, key=lambda x: -x["fleet_hosts"]):
             L.append(f"  - {r['benchmark']}   ({r['fleet_hosts']} hosts · {r['group']})")
     else:
-        L.append("  (ninguno — el SO de la flota ya está cubierto por benchmarks importados)")
+        L.append("  (ninguno — el SO autenticado de la flota ya está cubierto por benchmarks importados)")
+
+    L += ["", "[A'] Posibles — SO visto SOLO en hosts SIN autenticar (CONFIRMAR autenticando antes de importar):"]
+    if possible_unauth:
+        for r in sorted(possible_unauth, key=lambda x: -x["fleet_hosts_unauth"]):
+            L.append(f"  - {r['benchmark']}   (~{r['fleet_hosts_unauth']} hosts sin auth · {r['group']})")
+    else:
+        L.append("  (ninguno)")
 
     L += ["", "[B] Detectados por software (best-effort), sin benchmark importado:"]
     if detected_sw:
@@ -332,9 +397,11 @@ def run(args) -> int:
              f"out={out} max_hosts={args.max_hosts} level={args.level or 'all'} name={args.name!r}")
 
     print(f"[1/5] Barriendo inventario (POD {client.pod}, máx {args.max_hosts} hosts)…")
-    os_counts, total, no_os = _fleet_os(client, args.max_hosts)
-    print(f"      {total} hosts · {len(os_counts)} variantes de SO · {no_os} sin SO")
-    log.info(f"fleet hosts={total} os_variants={len(os_counts)} no_os={no_os}")
+    fleet = _fleet_os(client, args.max_hosts)
+    print(f"      {fleet['total']} hosts · {fleet['n_auth']} autenticados (SO confiable) · "
+          f"{fleet['n_unauth']} sin autenticar · {len(fleet['os_auth'])} variantes de SO confiable")
+    log.info(f"fleet total={fleet['total']} auth={fleet['n_auth']} unauth={fleet['n_unauth']} "
+             f"os_auth_variants={len(fleet['os_auth'])} os_unauth_variants={len(fleet['os_unauth'])}")
 
     print("[2/5] Inferencia best-effort de software (CSAM)…")
     software = _fleet_software(client, args.max_hosts)
@@ -346,7 +413,7 @@ def run(args) -> int:
     print(f"      {len(policies)} policies en el tenant")
     log.info(f"policies imported={len(policies)}")
 
-    rec = reconcile(catalog, os_counts, software, policies)
+    rec = reconcile(catalog, fleet["os_auth"], fleet["os_unauth"], software, policies)
 
     # fuentes = policies importadas que matchean un benchmark del catálogo (CIS) -> a cosechar
     src_ids, present_sources, seen = [], [], set()
@@ -382,7 +449,7 @@ def run(args) -> int:
         log.info("pack skipped (sin benchmarks CIS importados)")
 
     print("[5/5] Emitiendo faltantes.txt + subir.sh…")
-    _write_faltantes(out / "faltantes.txt", catalog, rec, os_counts, total, no_os,
+    _write_faltantes(out / "faltantes.txt", catalog, rec, fleet,
                      bool(software), present_sources, client.pod, args.name, now)
     drift_done = None
     if result:
