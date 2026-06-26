@@ -44,13 +44,28 @@ def _http_ok(code: int, text: str, what: str) -> None:
         raise SystemExit(f"[error] {what}: HTTP {code}\n{text[:500]}")
 
 
+# Diagnóstico de POSTURE por cuenta (NO colapsar "no encontró nada" en un solo estado):
+#   ok            -> 200 + evaluations con al menos un control evaluado (PASS/FAIL/…).
+#   not_evaluated -> 200 + evaluations pero TODAS NOT_EVALUATED -> CSPM activo, el connector aún
+#                    no corrió la evaluación -> "Run Connector". (caso C)
+#   empty         -> 200 pero sin evaluations (content: []) -> CSPM no activo en el connector
+#                    (solo inventario) o sin evaluations para esa cuenta. (caso B)
+#   auth          -> HTTP 401/403 en la API CSPM -> el API user (gateway+JWT) no tiene scope del
+#                    módulo CloudView / CSPM no habilitado. NO es "vacío". (caso A)
+#   error         -> otro fallo HTTP (5xx/red).
 def _fetch_all_evaluations(client, provider, account, page_size=500, max_pages=200):
     """Lee TODAS las páginas de evaluations/{account} (paginación Spring: content/last/number).
-    Solo GETs read-only. Devuelve la lista plana de items."""
-    items, page = [], 0
+    Solo GETs read-only. Devuelve (items, http_status): el status de la 1ª página, para que el
+    caller distinga 401/403 (auth, caso A) de 200-vacío (caso B). 401/403 NO se traga: corta y
+    devuelve ([], code). Otro non-200 (5xx/red) sí aborta vía _http_ok."""
+    items, page, first_status = [], 0, 0
     while page < max_pages:
         code, text = client.list_evaluations(provider, account,
                                               params={"pageSize": page_size, "pageNo": page})
+        if page == 0:
+            first_status = code
+        if code in (401, 403):                       # caso A: auth/permiso CSPM -> NO silenciar
+            return [], code
         _http_ok(code, text, f"{provider}/evaluations/{account} (page {page})")
         obj = json.loads(text)
         content = obj.get("content") if isinstance(obj, dict) else obj
@@ -60,22 +75,29 @@ def _fetch_all_evaluations(client, provider, account, page_size=500, max_pages=2
         if not isinstance(obj, dict) or obj.get("last") is True or len(content) < page_size:
             break
         page += 1
-    return items
+    return items, first_status
 
 
 def _discover_accounts(client, provider):
     """Lista los connectors del provider (GET read-only) y extrae los account/subscription/project ids.
     OCI va por la Connector Management API (`/connectors/v1.0/OCI/list`): cloudview-api/oci/connectors
-    NO existe (404). El resto (aws/azure/gcp) por cloudview-api `/<prov>/connectors`."""
+    NO existe (404). El resto (aws/azure/gcp) por cloudview-api `/<prov>/connectors`.
+
+    Devuelve (accounts, status): `status` ∈ ok|empty|auth|error para que el caller NO confunda
+    "401/403 al listar connectors" (caso A: auth/permiso CSPM) con "200 sin connectors" (vacío
+    legítimo). Antes ambos caían en `[]` -> indistinguibles (síntoma sinacofi: _probe_tc daba 401)."""
     try:
         if provider == "oci":
             code, text = client.list_cloud_connectors("OCI", {"pageSize": 100})
         else:
             code, text = client.list_connectors(provider)
-    except Exception:
-        return []
+    except Exception as e:  # noqa: BLE001
+        return [], ("error", f"error de cliente: {type(e).__name__}: {str(e)[:120]}")
+    if code in (401, 403):
+        snip = (text or "")[:120].strip().replace("\n", " ")
+        return [], ("auth", f"HTTP {code} (auth/permiso CSPM, NO ausencia de cuentas): {snip}")
     if code != 200:
-        return []
+        return [], ("error", f"HTTP {code}: {(text or '')[:140].strip()}")
     obj = json.loads(text)
     items = obj.get("content") if isinstance(obj, dict) else (obj if isinstance(obj, list) else [])
     seen, out = set(), []
@@ -88,19 +110,56 @@ def _discover_accounts(client, provider):
                 seen.add(str(v))
                 out.append(str(v))
                 break
-    return out
+    return out, ("ok" if out else "empty", f"{len(out)} cuenta(s)")
 
 
-def _run_one(client, spec, provider, account, out_base):
-    """Corre el pipeline para una cuenta: fetch evaluations -> classify -> emit. Read-only."""
-    items = _fetch_all_evaluations(client, provider, account)
+def _diagnose_posture(http_status: int, controls: list, posture: dict) -> tuple[str, str]:
+    """Clasifica el resultado de leer posture en uno de los 3 casos distinguibles (+auth), para
+    que el próximo diagnóstico sea inmediato y NO se colapsen estados muy distintos en "vacío":
+      auth          (A) -> 401/403 en la API CSPM: el API user no tiene scope CloudView / CSPM no
+                           habilitado en la suscripción. NO es "sin datos".
+      empty         (B) -> 200 pero evaluations vacío: CSPM no activo en el connector (solo
+                           inventario) o sin evaluations para esa cuenta.
+      not_evaluated (C) -> 200 con evaluations pero TODAS NOT_EVALUATED: CSPM activo, el connector
+                           aún no corrió la evaluación -> hay que "Run Connector".
+      ok                -> 200 con al menos un control evaluado (PASS/FAIL/…).
+    Devuelve (estado, detalle-humano)."""
+    if http_status in (401, 403):
+        return "auth", (f"HTTP {http_status}: la API CSPM rechazó auth/permiso — el API user "
+                        "(gateway+JWT) no tiene scope del módulo CloudView o CSPM no está "
+                        "habilitado en la suscripción. NO es ausencia de datos.")
+    if not controls:
+        return "empty", ("HTTP 200 pero sin evaluations (content: []) — CSPM no activo en el "
+                         "connector (solo inventario) o sin evaluations para esta cuenta.")
+    evaluated = sum(1 for v in posture.values() if v not in ("NOT_EVALUATED", "UNKNOWN", ""))
+    if evaluated == 0:
+        return "not_evaluated", (f"HTTP 200 con {len(controls)} control(es) pero TODOS "
+                                 "NOT_EVALUATED — CSPM activo, el connector aún no corrió la "
+                                 'evaluación. Acción: "Run Connector" en la consola.')
+    return "ok", f"HTTP 200 · {evaluated}/{len(controls)} control(es) evaluado(s)"
+
+
+def _run_one(client, spec, provider, account, out_base, log=None):
+    """Corre el pipeline para una cuenta: fetch evaluations -> classify -> emit. Read-only.
+    Loguea de forma DISTINGUIBLE cuál de los 3 casos de posture ocurrió (auth/empty/not_evaluated/
+    ok), por provider/cuenta, tanto a stdout como al run.log."""
+    items, http_status = _fetch_all_evaluations(client, provider, account)
     controls = parse_controls(items)
     posture = parse_evaluations(items)
+    state, why = _diagnose_posture(http_status, controls, posture)
+    DIAG = {"auth": "🔐 AUTH/PERMISO", "empty": "∅ SIN EVALUATIONS",
+            "not_evaluated": "⏳ NOT_EVALUATED (Run Connector)", "ok": "✓ OK"}
+    diag_line = f"  [{provider}/{account}] posture {DIAG[state]} — {why}"
+    print(diag_line, flush=True)
+    if log is not None:
+        log.info(f"{provider}/{account} posture_state={state} http={http_status} "
+                 f"controls={len(controls)} :: {why}")
     out_dir = str(Path(out_base) / provider / (account or "default"))
     stats = build_pack(controls, posture, spec, out_dir, provider=provider, account=account)
-    print(f"  [{provider}/{account}] {stats['controls']} ctrl · {stats['fails']} FAIL · "
-          f"{stats['gaps']} a revisar · {stats['by_family']}", flush=True)
-    return {"provider": provider, "account": account, "out_dir": out_dir, **stats}
+    print(f"  [{provider}/{account}] {stats['controls']} ctrl · {stats['evaluated']} eval · "
+          f"{stats['fails']} FAIL · {stats['gaps']} a revisar · {stats['by_family']}", flush=True)
+    return {"provider": provider, "account": account, "out_dir": out_dir,
+            "posture_state": state, **stats}
 
 
 def main(argv=None) -> int:
@@ -158,18 +217,32 @@ def main(argv=None) -> int:
     providers = ["aws", "azure", "gcp", "oci"] if args.provider == "all" else [args.provider]
     ran = 0
     for prov in providers:
-        accounts = [args.account] if args.account else _discover_accounts(client, prov)
+        if args.account:
+            accounts, disc = [args.account], ("ok", "cuenta provista por --account")
+        else:
+            accounts, disc = _discover_accounts(client, prov)
+        disc_state, disc_why = disc
         if not accounts:
-            print(f"  [{prov}] sin connectors/cuentas — skip", flush=True)
-            log.info(f"{prov} skip (sin connectors/cuentas)")
+            # NO colapsar "401/403 al descubrir connectors" (auth, caso A) con "200 sin connectors"
+            # (vacío legítimo): logueá el motivo distinguible.
+            if disc_state == "auth":
+                print(f"  [{prov}] 🔐 AUTH/PERMISO al listar connectors — {disc_why}", flush=True)
+                log.info(f"{prov} discover_state=auth :: {disc_why}")
+            elif disc_state == "error":
+                print(f"  [{prov}] ⚠️ ERROR al listar connectors — {disc_why}", flush=True)
+                log.info(f"{prov} discover_state=error :: {disc_why}")
+            else:
+                print(f"  [{prov}] ∅ sin connectors/cuentas — skip", flush=True)
+                log.info(f"{prov} discover_state=empty (sin connectors/cuentas)")
             continue
         for acct in accounts:
             try:
-                r = _run_one(client, spec, prov, acct, out_base)
-                log.info(f"{prov}/{acct} controls={r['controls']} fails={r['fails']} gaps={r['gaps']}")
+                r = _run_one(client, spec, prov, acct, out_base, log=log)
+                log.info(f"{prov}/{acct} posture={r['posture_state']} controls={r['controls']} "
+                         f"evaluated={r['evaluated']} fails={r['fails']} gaps={r['gaps']}")
                 ran += 1
             except SystemExit as e:
-                print(f"  [{prov}/{acct}] ERROR: {e}", flush=True)
+                print(f"  [{prov}/{acct}] ⚠️ ERROR: {e}", flush=True)
                 log.info(f"{prov}/{acct} ERROR {e}")
     link_latest(run_dir)
     log.info(f"done accounts={ran} calls={client.call_count} out={out_base}")
