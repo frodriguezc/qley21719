@@ -14,9 +14,10 @@ de descubrimiento (connectors/policies/mandates) + imprime el PLAN (qué crearí
 Uso:
     # DRY-RUN (default, read-only): muestra el plan sin crear nada
     python scripts/extract_cloud_reports.py --provider oci
+    # multi-tenant (igual que run.sh): TENANT=<slug> carga .env.<slug> y aísla la salida
+    TENANT=sinacofi python scripts/extract_cloud_reports.py --provider oci
     # EJECUTAR (mutación, human-gate): crea, pollea y descarga
-    TENANT=sinacofi ... python scripts/extract_cloud_reports.py --provider oci --run
-    python scripts/extract_cloud_reports.py --provider all --reports assessment --run
+    TENANT=sinacofi python scripts/extract_cloud_reports.py --provider oci --run
 
 Salida: artifacts/cloud-reports/<run_id>/<provider>/<account>/  (gitignored): los CSV/PDF + run.log.
 """
@@ -28,7 +29,9 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from qualys_client.client import _read_dotenv  # noqa: E402
 from scripts.cloud_posture_pack import _ACCOUNT_KEYS  # noqa: E402  (reusa el mapeo de account keys)
 from scripts._runtime import (link_latest, preflight_writable, resolve_run_dir,  # noqa: E402
                               setup_run_log, slugify)
@@ -54,6 +57,22 @@ _DONE_BAD = {"failed", "error", "cancelled", "canceled"}
 # --------------------------------------------------------------------------------------
 # Helpers PUROS (testeables sin red)
 # --------------------------------------------------------------------------------------
+
+def _tenant_env(tenant: str | None, root) -> tuple[str | None, dict]:
+    """Soporte multi-tenant consistente con run.sh: dado `TENANT=<slug>`, lee `.env.<slug>` bajo
+    `root` y devuelve (slug, {QUALYS_*}) para que el caller las exporte (el env-file del tenant
+    gana, igual que run.sh). Pura: NO toca os.environ. Sin TENANT -> (None, {}); con TENANT pero
+    sin `.env.<slug>` -> (slug, {}) y el caller cae a las credenciales del entorno/.env raíz."""
+    if not tenant:
+        return None, {}
+    slug = slugify(tenant)
+    envfile = Path(root) / f".env.{slug}"
+    if not envfile.exists():
+        return slug, {}
+    d = _read_dotenv(envfile)
+    vals = {k: d[k] for k in ("QUALYS_POD", "QUALYS_API_USER", "QUALYS_API_PASSWORD") if d.get(k)}
+    return slug, vals
+
 
 def _first(d: dict, keys) -> str | None:
     for k in keys:
@@ -264,13 +283,21 @@ def main(argv=None, client=None) -> int:
     want = {r.strip().lower() for r in args.reports.split(",") if r.strip()}
     results = [r.strip() for r in args.results.split(",") if r.strip()]
 
+    import os
+    tenant = os.environ.get("TENANT", "").strip()
+    tslug, tvals = _tenant_env(tenant, ROOT)
+    for k, v in tvals.items():                        # el env-file del tenant gana (como run.sh)
+        os.environ[k] = v
+
     base = Path(args.out)
     preflight_writable(base)
-    run_dir, run_id = resolve_run_dir(base)
+    run_dir, run_id = resolve_run_dir(base, slug=tslug)   # aísla por tenant: <out>/<slug>/<run_id>
     run_dir.mkdir(parents=True, exist_ok=True)
     log = setup_run_log(run_dir)
     mode = "RUN (mutación)" if args.run else "DRY-RUN (plan, read-only)"
-    log.info(f"start run_id={run_id} mode={'run' if args.run else 'dry-run'} "
+    tnote = (f"tenant={tslug}{'' if tvals else ' (sin .env.<slug>; uso entorno/.env)'}"
+             if tenant else "tenant=(none)")
+    log.info(f"start run_id={run_id} mode={'run' if args.run else 'dry-run'} {tnote} "
              f"provider={args.provider} reports={sorted(want)} account={args.account or 'auto'}")
 
     if client is None:                               # DI: los tests inyectan un cliente fake
