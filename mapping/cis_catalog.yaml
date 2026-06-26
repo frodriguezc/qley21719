@@ -11,7 +11,14 @@
 #   group:         agrupador para el reporte
 #   kind:          os | db | middleware | container | virtualization | network
 #                  (os = detectable por el SO del host; el resto = best-effort -> "verificar")
-#   benchmark:     nombre del benchmark CIS a importar (Import from Library)
+#   benchmark:     nombre del benchmark CIS a importar (Import from Library); fallback genérico
+#   benchmark_versioned: (opcional) plantilla con {ver} -> nombre EXACTO por versión mayor del SO
+#                  (p.ej. "CIS Oracle Linux {ver} Benchmark"). Si está, el reporte parte la línea
+#                  por versión detectada en la flota en vez de "(versión = la de la flota)".
+#   version_re:    (opcional, requerido por benchmark_versioned) regex case-insensitive con UN grupo
+#                  de captura = versión mayor; se aplica al <OS> del host Y al TITLE de la policy
+#                  importada -> permite el match "ya importado" version-aware (OL8/OL9 importados no
+#                  cubren OL10). Si no captura (p.ej. SO ambiguo "Ubuntu/Linux"), cae al fallback.
 #   pillars:       familias de la ley a las que aporta (informativo)
 #   os_match:      regex (case-insensitive) contra el <OS> del host  -> presencia en la flota
 #   software_match:regex contra software/servicios detectados (best-effort; db/middleware/...)
@@ -85,6 +92,8 @@ targets:
     group: "Server OS · Linux (RHEL family)"
     kind: os
     benchmark: "CIS Red Hat Enterprise Linux Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS Red Hat Enterprise Linux {ver} Benchmark"
+    version_re: '(?:red\s*hat enterprise linux|rhel)\D*(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['red\s*hat enterprise linux', '\brhel\b']
     title_match: ['red hat enterprise linux']
@@ -92,6 +101,8 @@ targets:
     group: "Server OS · Linux (RHEL family)"
     kind: os
     benchmark: "CIS Oracle Linux Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS Oracle Linux {ver} Benchmark"
+    version_re: 'oracle (?:enterprise )?linux\s+(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['oracle (enterprise )?linux']
     title_match: ['oracle linux', 'oracle enterprise linux']
@@ -99,6 +110,8 @@ targets:
     group: "Server OS · Linux (RHEL family)"
     kind: os
     benchmark: "CIS CentOS Linux Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS CentOS Linux {ver} Benchmark"
+    version_re: 'centos\D*(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['centos']
     title_match: ['centos']
@@ -106,6 +119,8 @@ targets:
     group: "Server OS · Linux (RHEL family)"
     kind: os
     benchmark: "CIS Rocky Linux Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS Rocky Linux {ver} Benchmark"
+    version_re: 'rocky linux\D*(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['rocky linux']
     title_match: ['rocky linux']
@@ -113,6 +128,8 @@ targets:
     group: "Server OS · Linux (RHEL family)"
     kind: os
     benchmark: "CIS AlmaLinux OS Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS AlmaLinux OS {ver} Benchmark"
+    version_re: 'alma\s*linux\D*(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['alma\s*linux']
     title_match: ['alma linux', 'almalinux']
@@ -122,6 +139,8 @@ targets:
     group: "Server OS · Linux (Debian family)"
     kind: os
     benchmark: "CIS Ubuntu Linux LTS Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS Ubuntu Linux {ver} LTS Benchmark"
+    version_re: 'ubuntu\s+(\d+\.\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['ubuntu']
     title_match: ['ubuntu']
@@ -129,6 +148,8 @@ targets:
     group: "Server OS · Linux (Debian family)"
     kind: os
     benchmark: "CIS Debian Linux Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS Debian Linux {ver} Benchmark"
+    version_re: 'debian\D*(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['debian']
     title_match: ['debian']
@@ -138,6 +159,8 @@ targets:
     group: "Server OS · Linux (SUSE)"
     kind: os
     benchmark: "CIS SUSE Linux Enterprise Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS SUSE Linux Enterprise {ver} Benchmark"
+    version_re: '(?:suse linux enterprise|sles)\D*(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['suse linux enterprise', '\bsles\b']
     title_match: ['suse linux enterprise']
@@ -145,6 +168,8 @@ targets:
     group: "Server OS · Linux (Amazon)"
     kind: os
     benchmark: "CIS Amazon Linux Benchmark (2 / 2023, según la flota)"
+    benchmark_versioned: "CIS Amazon Linux {ver} Benchmark"
+    version_re: 'amazon linux\D*(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['amazon linux']
     title_match: ['amazon linux']
@@ -274,6 +299,8 @@ targets:
     group: "Virtualización"
     kind: virtualization
     benchmark: "CIS VMware ESXi Benchmark (versión = la de la flota)"
+    benchmark_versioned: "CIS VMware ESXi {ver} Benchmark"
+    version_re: 'esxi\s+(\d+)'
     pillars: [acceso, cifrado, auditoria, hardening]
     os_match: ['esxi', 'vmware esx']
     software_match: ['esxi', 'vmware esx']

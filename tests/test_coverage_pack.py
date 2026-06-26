@@ -139,14 +139,139 @@ def test_write_faltantes_splits_sections_and_routes_unauth_to_possibles():
     assert "SO AMBIGUO" in text and "Ubuntu/Linux" in text
     assert "18 hosts SIN autenticar" in text
 
-    # [A] sale del SO confiable -> Oracle SÍ, Ubuntu NO (regresión: el Ubuntu bogus ya no es import duro)
+    # [A] sale del SO confiable -> Oracle SÍ (con versión EXACTA), Ubuntu NO (Ubuntu bogus no es import duro)
     a_block = _section(text, "[A] Detectados", "[A'] Posibles")
-    assert "CIS Oracle Linux Benchmark" in a_block
+    assert "CIS Oracle Linux 8 Benchmark" in a_block          # point 2: versión exacta, no genérico
     assert "CIS Ubuntu Linux LTS Benchmark" not in a_block
 
-    # [A'] son los posibles vistos solo sin auth -> Ubuntu SÍ
+    # [A'] son los posibles vistos solo sin auth -> Ubuntu SÍ (sin versión parseable -> nombre genérico)
     ap_block = _section(text, "[A'] Posibles", "[B] Detectados")
     assert "CIS Ubuntu Linux LTS Benchmark" in ap_block
+
+
+# ----------------------------------------------------------- point 2: versión exacta
+
+def test_extract_ver():
+    assert tcp._extract_ver(r'oracle (?:enterprise )?linux\s+(\d+)', "Oracle Enterprise Linux 8.10") == "8"
+    assert tcp._extract_ver(r'ubuntu\s+(\d+\.\d+)', "Ubuntu 22.04.3 LTS") == "22.04"
+    assert tcp._extract_ver(r'ubuntu\s+(\d+\.\d+)', "Ubuntu/Linux") is None   # SO ambiguo -> sin versión
+    assert tcp._extract_ver(None, "x") is None
+
+
+def test_bench_name_versioned_vs_generic():
+    row = {"benchmark": "CIS Oracle Linux Benchmark (versión = la de la flota)",
+           "benchmark_versioned": "CIS Oracle Linux {ver} Benchmark"}
+    assert tcp._bench_name(row, "8") == "CIS Oracle Linux 8 Benchmark"
+    assert tcp._bench_name(row, None) == "CIS Oracle Linux Benchmark (versión = la de la flota)"
+    assert tcp._bench_name({"benchmark": "X"}, "9") == "X"   # target sin plantilla
+
+
+def test_reconcile_version_aware_imported_coverage():
+    # OL8 (144) + OL9 (22) + OL10 (1) autenticados; OL8 y OL9 YA importados, OL10 NO.
+    os_auth = Counter({"Oracle Enterprise Linux 8.10": 144,
+                       "Oracle Enterprise Linux 9.8": 22,
+                       "Oracle Enterprise Linux 10.1": 1})
+    policies = [("1", "CIS Benchmark for Oracle Linux 8, v4.0.0 [Level 1 and Level 2] v.3.0"),
+                ("2", "CIS Benchmark for Oracle Linux 9, v2.0.0 [Level 1 and Level 2] v.9.0")]
+    rec = tcp.reconcile(CATALOG, os_auth, Counter(), set(), policies)
+    r = next(x for x in rec["rows"] if x["key"] == "oracle_linux")
+    assert r["versioned"] is True
+    assert r["versions_auth"] == {"8": 144, "9": 22, "10": 1}
+    assert r["imported_versions"] == {"8", "9"}        # versión extraída del TITLE de la policy
+    # [A]: SOLO OL10 (las importadas OL8/OL9 NO tapan el host OL10)
+    a = "\n".join(tcp._os_missing_auth(rec["rows"]))
+    assert "CIS Oracle Linux 10 Benchmark" in a
+    assert "CIS Oracle Linux 8 Benchmark" not in a
+    assert "CIS Oracle Linux 9 Benchmark" not in a
+
+
+def test_possible_unauth_versioned_and_nover_fallback():
+    # versión parseable sin auth -> [A'] con versión exacta; SO ambiguo -> fallback genérico
+    os_unauth = Counter({"Ubuntu 22.04.3 LTS": 5, "Ubuntu/Linux": 11})
+    rec = tcp.reconcile(CATALOG, Counter(), os_unauth, set(), [])
+    ap = "\n".join(tcp._os_possible_unauth(rec["rows"]))
+    assert "CIS Ubuntu Linux 22.04 LTS Benchmark" in ap   # versión parseada
+    assert "CIS Ubuntu Linux LTS Benchmark" in ap          # los "Ubuntu/Linux" sin versión -> genérico
+
+
+# ------------------------------------------------- software: name+version + GAV fallback
+
+class FakeQps:
+    """Cliente QPS fake: responde por path EXACTO (hostasset=CSAM, asset=GAV)."""
+    def __init__(self, by_path):
+        self._by = by_path
+        self.seen = []
+
+    def qps_search(self, path, limit=None, start_from_id=None):
+        self.seen.append(path)
+        return (200, self._by[path]) if path in self._by else (404, "<x/>")
+
+
+_HOSTASSET_XML = (
+    "<ServiceResponse><data>"
+    "<HostAsset><softwareList>"
+    "<HostAssetSoftware><name>Microsoft SQL Server 2019</name><version>15.0.2000</version></HostAssetSoftware>"
+    "<HostAssetSoftware><name>PostgreSQL</name><version>14.2</version></HostAssetSoftware>"
+    "</softwareList></HostAsset>"
+    "</data><hasMoreRecords>false</hasMoreRecords></ServiceResponse>"
+)
+_EMPTY_XML = "<ServiceResponse><hasMoreRecords>false</hasMoreRecords></ServiceResponse>"
+_ASSET_XML = (
+    "<ServiceResponse><data>"
+    "<Asset><softwareListData>"
+    "<SoftwareAssetSoftware><name>MariaDB</name><version>10.6</version></SoftwareAssetSoftware>"
+    "</softwareListData></Asset>"
+    "</data><hasMoreRecords>false</hasMoreRecords></ServiceResponse>"
+)
+_CSAM = "/qps/rest/2.0/search/am/hostasset"
+_GAV = "/qps/rest/2.0/search/am/asset"
+
+
+def test_collect_software_pairs_name_and_version():
+    c = FakeQps({_CSAM: _HOSTASSET_XML})
+    got = tcp._collect_software(c, _CSAM, "hostasset", 1000, 500)
+    assert "microsoft sql server 2019 15.0.2000" in got    # name + version pareados
+    assert "postgresql 14.2" in got
+
+
+def test_fleet_software_falls_back_to_gav_when_csam_empty():
+    c = FakeQps({_CSAM: _EMPTY_XML, _GAV: _ASSET_XML})
+    got = tcp._fleet_software(c, 1000, 500)
+    assert "mariadb 10.6" in got                            # vino de GAV
+    assert any("hostasset" in p for p in c.seen)            # intentó CSAM primero
+    assert any(p.endswith("/am/asset") for p in c.seen)     # y cayó a GAV
+
+
+def test_fleet_software_prefers_csam_when_available():
+    c = FakeQps({_CSAM: _HOSTASSET_XML, _GAV: _ASSET_XML})
+    got = tcp._fleet_software(c, 1000, 500)
+    assert "postgresql 14.2" in got and "mariadb 10.6" not in got   # usó CSAM, no tocó GAV
+    assert not any(p.endswith("/am/asset") for p in c.seen)
+
+
+def test_reconcile_software_evidence_for_B():
+    sw = {"microsoft sql server 2019 15.0.2000", "postgresql 14.2"}
+    rec = tcp.reconcile(CATALOG, Counter(), Counter(), sw, [])
+    by_key = {r["key"]: r for r in rec["rows"]}
+    assert by_key["mssql"]["sw_hit"] is True
+    assert "microsoft sql server 2019 15.0.2000" in by_key["mssql"]["sw_matches"]
+    assert by_key["postgres"]["sw_matches"] == ["postgresql 14.2"]
+
+
+def test_sw_evidence_dedupes_arch_and_caps():
+    matches = [
+        "postgresql 10.23-4.0.1.module+el8",
+        "postgresql 10.23-4.0.1.module+el8.x86_64",     # dup por arch -> colapsa
+        "postgresql15 15.7-3pgdg.rhel8",
+        "postgresql15 15.8-1pgdg.rhel8.x86_64",          # versión distinta -> se conserva
+        "postgresql 9.6",
+        "postgresql 12.1",
+    ]
+    ev = tcp._sw_evidence(matches, cap=4)
+    assert "postgresql 10.23-4.0.1.module+el8" in ev
+    assert ".x86_64" not in ev                            # arch podada
+    assert ev.count("postgresql 10.23") == 1             # dedupeado (la dup por arch colapsó)
+    assert ev.endswith("; …")                             # 5 distintos > cap 4 -> elipsis
 
 
 def _run():
