@@ -106,45 +106,75 @@ def _fleet_os(client: QualysClient, max_hosts: int, page: int = 1000) -> dict:
             "no_os_auth": no_os_auth, "no_os_unauth": no_os_unauth}
 
 
-def _fleet_software(client: QualysClient, max_hosts: int, page: int = 500) -> set[str]:
-    """Best-effort: nombres de software del inventario CSAM (QPS /search/am/hostasset). Si el tenant
-    no tiene CSAM o el campo no viene, devuelve set() (-> db/middleware caen en 'verificar').
+# Fuentes de software del inventario, en orden de preferencia (todas QPS read-only /search):
+#   CSAM (hostasset) -> si no está disponible, GAV (asset). GAV es el inventario base presente en
+#   casi todo tenant, así que sirve de fallback para que [B] funcione sin CSAM (indicación de Felipe).
+_SOFTWARE_SOURCES = (
+    ("/qps/rest/2.0/search/am/hostasset", "hostasset"),   # CSAM
+    ("/qps/rest/2.0/search/am/asset", "asset"),           # GAV (fallback)
+)
 
-    Pagina por cursor (startFromId/lastId) igual que _fleet_os/_fetch_all_evaluations: en tenants con
-    >page host assets, una sola página subreportaba el software (-> faltantes.txt sección [B]). Sigue
-    siendo best-effort: cualquier HTTP!=200, error o schema viejo degrada al set acumulado."""
+
+def _collect_software(client: QualysClient, endpoint: str, item_tag: str,
+                      max_hosts: int, page: int) -> set[str]:
+    """Pagina un endpoint de inventario (QPS) y junta el software como '<name> <version>' (versión
+    opcional, para que [B] sea más certero). Pagina por cursor (startFromId/lastId) contando los
+    <item_tag> de cada página. Best-effort: cualquier HTTP!=200/error/schema viejo corta y devuelve
+    lo acumulado."""
     found: set[str] = set()
     start_from_id: int | None = None
     scanned = 0
     try:
         while scanned < max_hosts:
             want = min(page, max_hosts - scanned)
-            http, text = client.qps_search("/qps/rest/2.0/search/am/hostasset",
-                                           limit=want, start_from_id=start_from_id)
+            http, text = client.qps_search(endpoint, limit=want, start_from_id=start_from_id)
             if http != 200:
                 break
             root = ET.fromstring(text)
-            page_hosts = 0
-            # CSAM expone software bajo .../softwareList/HostAssetSoftware/name (varía por versión);
-            # juntamos cualquier <name>/<fullName> que cuelgue de un nodo *software*, y contamos
-            # los <HostAsset> de la página para avanzar el cursor sin re-leer.
+            page_items = 0
+            # El software cuelga de un nodo *software* (HostAssetSoftware / SoftwareAssetSoftware…);
+            # leemos los HIJOS DIRECTOS de cada nodo *software* para parear name<->version (un .iter()
+            # plano los desordenaría). Contamos los <item_tag> de la página para avanzar el cursor.
             for el in root.iter():
                 tag = el.tag.lower()
-                if tag == "hostasset":
-                    page_hosts += 1
-                elif "software" in tag:
-                    for child in el.iter():
-                        if child.tag.lower() in ("name", "fullname") and (child.text or "").strip():
-                            found.add(child.text.strip().lower())
-            scanned += page_hosts
+                if tag == item_tag:
+                    page_items += 1
+                    continue
+                if "software" not in tag:
+                    continue
+                name = ver = ""
+                for child in list(el):
+                    ct = child.tag.lower()
+                    txt = (child.text or "").strip()
+                    if not txt:
+                        continue
+                    if ct in ("name", "fullname") and not name:
+                        name = txt
+                    elif ct == "version" and not ver:
+                        ver = txt
+                if name:
+                    found.add((f"{name} {ver}".strip()).lower())
+            scanned += page_items
             has_more = (root.findtext(".//hasMoreRecords") or "").strip().lower() == "true"
             last_id = (root.findtext(".//lastId") or "").strip()
-            if page_hosts == 0 or not has_more or not last_id.isdigit():
+            if page_items == 0 or not has_more or not last_id.isdigit():
                 break
             start_from_id = int(last_id) + 1
     except Exception:
         return found
     return found
+
+
+def _fleet_software(client: QualysClient, max_hosts: int, page: int = 500) -> set[str]:
+    """Best-effort: software del inventario para inferir DB/middleware ([B]). Intenta **CSAM**
+    (hostasset) y, si no devuelve nada (tenant sin CSAM), cae a **GAV** (asset) — así [B] funciona
+    en cualquier tenant. Si ninguna fuente da datos, devuelve set() (-> db/middleware caen en [C]
+    'verificar manualmente'). Cada entrada es '<name> <version>' (versión si el inventario la trae)."""
+    for endpoint, item_tag in _SOFTWARE_SOURCES:
+        got = _collect_software(client, endpoint, item_tag, max_hosts, page)
+        if got:
+            return got
+    return set()
 
 
 def _imported_policies(client: QualysClient) -> list[tuple[str, str]]:
@@ -169,6 +199,30 @@ def _any(patterns, text) -> bool:
     return any(re.search(p, text, re.I) for p in (patterns or []))
 
 
+def _extract_ver(version_re: str | None, text: str) -> str | None:
+    """Versión mayor capturada por `version_re` (grupo 1) en `text`, o None. Case-insensitive."""
+    if not version_re:
+        return None
+    m = re.search(version_re, text or "", re.I)
+    return m.group(1) if m else None
+
+
+def _ver_breakdown(version_re, os_match, os_counts: Counter) -> tuple[dict, int]:
+    """Para un target versionado: {versión: hosts} de los SO que matchean `os_match`, + cuántos
+    matchean pero NO permiten extraer versión (SO ambiguo p.ej. 'Ubuntu/Linux' -> cae al fallback)."""
+    by_ver: dict[str, int] = {}
+    nover = 0
+    for osx, n in os_counts.items():
+        if not _any(os_match, osx):
+            continue
+        v = _extract_ver(version_re, osx)
+        if v:
+            by_ver[v] = by_ver.get(v, 0) + n
+        else:
+            nover += n
+    return by_ver, nover
+
+
 def reconcile(catalog: dict, os_auth: Counter, os_unauth: Counter, software: set[str],
               policies: list[tuple[str, str]]) -> dict:
     """Cruza el catálogo curado con la flota (SO autenticado/ambiguo + software) y las policies
@@ -176,34 +230,164 @@ def reconcile(catalog: dict, os_auth: Counter, os_unauth: Counter, software: set
 
     La PRESENCIA confiable que dispara una recomendación dura [A] se mide SOLO sobre el SO
     autenticado (`os_auth`). El SO ambiguo (`os_unauth`, fingerprint remoto) se cuenta aparte en
-    `fleet_hosts_unauth` y se reporta como 'posible — confirmar autenticando' [A'], no como import
-    obligado (puede ser impreciso y no es evaluable por PC sin autenticar)."""
+    `fleet_hosts_unauth` y se reporta como 'posible — confirmar autenticando' [A'].
+
+    Para los targets **versionados** (con `version_re` + `benchmark_versioned`) además desglosa la
+    presencia por **versión mayor** del SO (point 2): así [A]/[A'] nombran el benchmark EXACTO por
+    versión, y el 'ya importado' es version-aware (las versiones importadas se extraen del TITLE de
+    la policy con el mismo `version_re` -> OL8/OL9 importados NO tapan un host OL10)."""
     targets = catalog["targets"]
 
     rows = []
     for tg in targets:
+        version_re = tg.get("version_re")
+        versioned = bool(version_re and tg.get("benchmark_versioned"))
         # ¿presente en la flota, con SO CONFIABLE? (esto dispara [A])
         fleet_auth = sum(n for osx, n in os_auth.items() if _any(tg.get("os_match"), osx))
         # ¿visto solo en hosts SIN autenticar? (fingerprint ambiguo -> [A'] "confirmar")
         fleet_unauth = sum(n for osx, n in os_unauth.items() if _any(tg.get("os_match"), osx))
-        # match de software por nombre individual (no contra un blob unido -> evita cruces falsos)
-        sw_hit = any(_any(tg.get("software_match"), s) for s in software)
+        # software que matchea (evidencia para [B]; no contra un blob unido -> evita cruces falsos)
+        sw_matches = sorted(s for s in software if _any(tg.get("software_match"), s))
+        sw_hit = bool(sw_matches)
         present_in_fleet = fleet_auth > 0 or sw_hit
         # ¿ya importado? (match de title contra las policies del tenant)
         imported_ids = [pid for pid, ti in policies if _any(tg.get("title_match"), ti)]
+
+        versions_auth, nover_auth = ({}, 0)
+        versions_unauth, nover_unauth = ({}, 0)
+        imported_versions: set[str] = set()
+        imported_anyver = False
+        if versioned:
+            versions_auth, nover_auth = _ver_breakdown(version_re, tg.get("os_match"), os_auth)
+            versions_unauth, nover_unauth = _ver_breakdown(version_re, tg.get("os_match"), os_unauth)
+            for pid, ti in policies:
+                if _any(tg.get("title_match"), ti):
+                    v = _extract_ver(version_re, ti)
+                    if v:
+                        imported_versions.add(v)
+                    else:
+                        imported_anyver = True   # policy del target sin versión parseable -> cubre todo (conservador)
+
         rows.append({
             "key": tg["key"], "group": tg["group"], "kind": tg["kind"],
-            "benchmark": tg["benchmark"], "pillars": tg.get("pillars", []),
-            "fleet_hosts": fleet_auth, "fleet_hosts_unauth": fleet_unauth, "sw_hit": sw_hit,
+            "benchmark": tg["benchmark"], "benchmark_versioned": tg.get("benchmark_versioned"),
+            "versioned": versioned, "pillars": tg.get("pillars", []),
+            "fleet_hosts": fleet_auth, "fleet_hosts_unauth": fleet_unauth,
+            "sw_hit": sw_hit, "sw_matches": sw_matches,
             "present_in_fleet": present_in_fleet,
             "imported_ids": imported_ids, "imported": bool(imported_ids),
+            "versions_auth": versions_auth, "versions_auth_nover": nover_auth,
+            "versions_unauth": versions_unauth, "versions_unauth_nover": nover_unauth,
+            "imported_versions": imported_versions, "imported_anyver": imported_anyver,
         })
     return {"rows": rows}
+
+
+def _bench_name(row: dict, ver: str | None) -> str:
+    """Nombre EXACTO del benchmark: la plantilla versionada si hay versión, si no el genérico."""
+    tmpl = row.get("benchmark_versioned")
+    return tmpl.format(ver=ver) if (tmpl and ver) else row["benchmark"]
+
+
+def _sw_evidence(matches: list[str], cap: int = 4) -> str:
+    """Evidencia de software para [B], legible: quita el sufijo de arquitectura (`.x86_64`/`.noarch`/
+    …) que duplica entradas, dedupea preservando orden, y limita a `cap` (+ '…'). Conserva la versión
+    (lo útil para elegir el benchmark); solo poda el ruido de empaquetado redundante."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in matches:
+        c = re.sub(r'\.(x86_64|noarch|i686|aarch64)\b', '', s).strip()
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return "; ".join(out[:cap]) + ("; …" if len(out) > cap else "")
+
+
+def _ver_covered(row: dict, ver: str) -> bool:
+    return row.get("imported_anyver", False) or ver in row.get("imported_versions", set())
+
+
+def _os_missing_auth(rows: list[dict]) -> list[str]:
+    """[A] — por SO CONFIABLE (auth), sin benchmark importado. Versionado: una línea por versión NO
+    cubierta; no-versionado: una línea por target presente y no importado. Ordenado por hosts desc."""
+    out: list[tuple[int, str]] = []
+    for r in rows:
+        if r["kind"] != "os":
+            continue
+        if r.get("versioned"):
+            for ver, cnt in r["versions_auth"].items():
+                if not _ver_covered(r, ver):
+                    out.append((cnt, f"  - {_bench_name(r, ver)}   ({cnt} hosts · {r['group']})"))
+            nover = r["versions_auth_nover"]
+            if nover and not (r["imported"] or r.get("imported_anyver")):
+                out.append((nover, f"  - {r['benchmark']}   ({nover} hosts · {r['group']})"))
+        elif r["present_in_fleet"] and not r["imported"]:
+            out.append((r["fleet_hosts"], f"  - {r['benchmark']}   ({r['fleet_hosts']} hosts · {r['group']})"))
+    return [line for _, line in sorted(out, key=lambda x: -x[0])]
+
+
+def _os_possible_unauth(rows: list[dict]) -> list[str]:
+    """[A'] — SO visto SOLO en hosts SIN autenticar (confirmar autenticando). Versionado: por versión
+    no cubierta y no ya listada en [A]; no-versionado: target sin presencia auth pero con hosts sin auth."""
+    out: list[tuple[int, str]] = []
+    for r in rows:
+        if r["kind"] != "os":
+            continue
+        if r.get("versioned"):
+            for ver, cnt in r["versions_unauth"].items():
+                if ver in r["versions_auth"] or _ver_covered(r, ver):
+                    continue
+                out.append((cnt, f"  - {_bench_name(r, ver)}   (~{cnt} hosts sin auth · {r['group']})"))
+            nover = r["versions_unauth_nover"]
+            if nover and not r["versions_auth"] and not (r["imported"] or r.get("imported_anyver")):
+                out.append((nover, f"  - {r['benchmark']}   (~{nover} hosts sin auth · {r['group']})"))
+        elif not r["present_in_fleet"] and not r["imported"] and r.get("fleet_hosts_unauth", 0) > 0:
+            out.append((r["fleet_hosts_unauth"],
+                        f"  - {r['benchmark']}   (~{r['fleet_hosts_unauth']} hosts sin auth · {r['group']})"))
+    return [line for _, line in sorted(out, key=lambda x: -x[0])]
 
 
 # --------------------------------------------------------------------------- #
 # Emisión de faltantes.txt + subir.sh
 # --------------------------------------------------------------------------- #
+def _import_howto() -> list[str]:
+    """Procedimiento GUI DETALLADO para importar un benchmark de la CIS Library. El GUI se reduce a
+    ESTE único paso (importar un benchmark nuevo de la librería); el resto del flujo —generar el
+    `policy.xml` de la Ley, importarla/actualizarla, leer cobertura— es 100% API. Qualys NO expone
+    el 'Import from Library' por API (la librería no es API-enumerable), por eso este paso es manual;
+    se documenta lo más detallado posible para que sea reproducible por cualquier operador."""
+    return [
+        "", "=" * 72,
+        "CÓMO IMPORTAR UN BENCHMARK DE LA CIS LIBRARY (único paso por GUI — human-gate)",
+        "-" * 72,
+        "Nota: este es el ÚNICO paso que requiere la consola web. Qualys no expone 'Import from",
+        "Library' por API (la librería no es API-enumerable). Todo lo demás es por API: el policy.xml",
+        "de la Ley se genera con este script y se importa/actualiza con subir.sh / subir-merge.sh.",
+        "",
+        "Para CADA benchmark listado en [A] / [A'] (usar el NOMBRE y la VERSIÓN exactos de cada línea):",
+        "  1. Entrar a la consola del POD (p.ej. https://qualysguard.<qgN>.apps.qualys.com) con un",
+        "     usuario con rol que incluya Policy Compliance y permiso para crear policies.",
+        "  2. En el selector de aplicación (arriba a la izq.), elegir 'Policy Compliance' (PC).",
+        "  3. Ir a la pestaña 'Policies'.",
+        "  4. Click en 'New' > 'Policy'  →  en el asistente, elegir 'Import from Library'.",
+        "  5. En el buscador de la librería, escribir el nombre exacto del benchmark de [A]/[A']",
+        "     (p.ej. 'Oracle Linux 8', 'Microsoft Windows Server 2016').",
+        "  6. Seleccionar el benchmark + versión correctos (p.ej. 'CIS Benchmark for Oracle Linux 8,",
+        "     v4.0.0'). Si la versión exacta del SO no está en la librería, elegir la versión CIS",
+        "     más cercana MENOR-O-IGUAL a la de la flota (CIS suele rezagar al SO).",
+        "  7. (Windows / multi-perfil) elegir el nivel y perfil: Level 1 (base) o Level 2 (endurecido),",
+        "     y Member Server vs Domain Controller según el rol del host.",
+        "  8. Click 'Next' / 'Create'; ponerle un nombre claro a la policy (p.ej. 'CIS Oracle Linux 8 - L1').",
+        "  9. Asignar los Asset Groups / Asset Tags de los hosts de ese SO (para que evalúe la flota correcta).",
+        " 10. Guardar.",
+        "",
+        "Tras importar TODOS los benchmarks faltantes:",
+        "  - Re-correr este generador para que los nuevos benchmarks entren al policy.xml de la Ley, y",
+        "  - importar/actualizar la policy de la Ley por API: subir.sh (nueva) o subir-merge.sh (in-place).",
+        "",
+    ]
+
+
 def _write_faltantes(path: Path, catalog: dict, rec: dict, fleet: dict,
                      software_seen: bool, present_sources: list[dict],
                      pod: str, name: str, now: str) -> None:
@@ -233,14 +417,11 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, fleet: dict,
     else:
         L.append("  (ninguno — el policy.xml no se generó: importa al menos un benchmark CIS)")
 
-    detected_missing = [r for r in rec["rows"]
-                        if r["present_in_fleet"] and not r["imported"] and r["kind"] == "os"]
-    # OS-kind targets vistos SOLO en hosts sin autenticar (no confirmados): posibles, a confirmar.
-    possible_unauth = [r for r in rec["rows"]
-                       if not r["imported"] and r["kind"] == "os"
-                       and not r["present_in_fleet"] and r.get("fleet_hosts_unauth", 0) > 0]
-    # non-OS (db/middleware/container/infra) no importados: si se detectó por software -> "detectado";
-    # si no -> "verificar manualmente" (Qualys no siempre fingerprintea el motor sin CSAM/auth scan).
+    # [A]/[A'] OS-kind, version-aware: una línea por (target, versión) NO cubierta (point 2).
+    a_lines = _os_missing_auth(rec["rows"])
+    ap_lines = _os_possible_unauth(rec["rows"])
+    # non-OS (db/middleware/container/infra) no importados: si se detectó por software -> [B] con
+    # EVIDENCIA del software detectado; si no -> [C] "verificar manualmente".
     verify = [r for r in rec["rows"] if not r["imported"] and r["kind"] != "os"]
     detected_sw = [r for r in verify if r["sw_hit"]]
     verify_only = [r for r in verify if not r["sw_hit"]]
@@ -253,23 +434,17 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, fleet: dict,
               "    credenciales) para confirmar el SO e incluirlos. [A]/[B] salen solo del SO confiable;",
               "    lo visto solo sin autenticar va a [A'] como 'posible — confirmar'.", ""]
     L += ["[A] Detectados en la flota por SO CONFIABLE (auth), sin benchmark importado:"]
-    if detected_missing:
-        for r in sorted(detected_missing, key=lambda x: -x["fleet_hosts"]):
-            L.append(f"  - {r['benchmark']}   ({r['fleet_hosts']} hosts · {r['group']})")
-    else:
-        L.append("  (ninguno — el SO autenticado de la flota ya está cubierto por benchmarks importados)")
+    L += a_lines or ["  (ninguno — el SO autenticado de la flota ya está cubierto por benchmarks importados)"]
 
     L += ["", "[A'] Posibles — SO visto SOLO en hosts SIN autenticar (CONFIRMAR autenticando antes de importar):"]
-    if possible_unauth:
-        for r in sorted(possible_unauth, key=lambda x: -x["fleet_hosts_unauth"]):
-            L.append(f"  - {r['benchmark']}   (~{r['fleet_hosts_unauth']} hosts sin auth · {r['group']})")
-    else:
-        L.append("  (ninguno)")
+    L += ap_lines or ["  (ninguno)"]
 
     L += ["", "[B] Detectados por software (best-effort), sin benchmark importado:"]
     if detected_sw:
         for r in detected_sw:
-            L.append(f"  - {r['benchmark']}   ({r['group']})")
+            ev = r.get("sw_matches") or []
+            ev_str = ("  — detectado: " + _sw_evidence(ev)) if ev else ""
+            L.append(f"  - {r['benchmark']}   ({r['group']}){ev_str}")
     else:
         L.append("  (ninguno detectado automáticamente)")
 
@@ -284,8 +459,7 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, fleet: dict,
         L.append(f"  - {o.get('group', o.get('key'))}: {o.get('benchmark', '')}  ({o.get('qualys_app', '')})")
     if not other:
         L.append("  (ninguno)")
-    L += ["", "Cómo importar un benchmark: PA > Policies > New > Policy > Import from Library > <nombre>.",
-          "Tras importar: re-correr este script para sumarlo al policy.xml, o regenerar el pack.", ""]
+    L += _import_howto()
     path.write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
