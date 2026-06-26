@@ -235,10 +235,14 @@ _CLOUD_REPORT_TEMPLATE = r"""---
 >
 > **Prerrequisito:** el API user necesita *Reporting Permission* en CloudView (un Reader puro puede
 > no poder POSTear el `create`).
+>
+> **Automatizable:** `scripts/extract_cloud_reports.py` hace este mismo flujo (create→poll→download,
+> multi-provider, secuencial, respetando los rate limits) — **DRY-RUN por defecto**; `--run` para
+> ejecutar (mutación, human-gate). Es la contraparte automatizada de estos `curl`.
 
-__OCI_WARN__Namespace `cloudview-api/rest/v1` · Host **`qualysguard.<seg>.apps.qualys.com`** (NO el
-FO `qualysapi.*` → 404; es el mismo host que esta herramienta ya resolvió — ver `run.log`) · Auth
-HTTP Basic + header `X-Requested-With`.
+__OCI_WARN__Namespace `cloudview-api/rest/v1` · Host **API Gateway `gateway.<seg>.apps.qualys.com`**
+(NO el FO `qualysapi.*` → 404, NI el portal `qualysguard.*` → 401; es el mismo host que esta
+herramienta ya resolvió — ver `run.log`) · Auth **JWT Bearer** (token vía `POST /auth`; ver abajo).
 
 **Parámetros de este scope:**
 
@@ -255,21 +259,24 @@ OCI→`OCI`/tenant (⚠️ verificar).
 **Variables** (definir en el shell; el password va por entorno, **nunca** en claro):
 
 ```bash
-PLATFORM_URL="https://qualysguard.<seg>.apps.qualys.com"   # mismo host que usa la herramienta
-export QUALYS_API_USER QUALYS_API_PASSWORD                 # ya en el entorno; NO hardcodear
+PLATFORM_URL="https://gateway.<seg>.apps.qualys.com"      # API Gateway del POD (mismo que la herramienta)
+export QUALYS_API_USER QUALYS_API_PASSWORD                # ya en el entorno; NO hardcodear
 PROVIDER=__PROVIDER__ CLOUD_TYPE=__CLOUD_TYPE__ SCOPE_ID=__SCOPE_ID__
+# 0) token JWT (POST /auth; el único POST que NO muta — solo emite el token):
+TOKEN=$(curl -s "$PLATFORM_URL/auth" -d "username=$QUALYS_API_USER" \
+  --data-urlencode "password=$QUALYS_API_PASSWORD" -d "token=true")
 ```
 
 ### A) Assessment Report (snapshot multi-policy; CSV/PDF; asíncrono)
 
 ```bash
 # 0) (read-only — ya lo hace la herramienta) resolver el connectorId del scope
-curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-Requested-With: qley21719" \
   -H "Accept: application/json" \
   "$PLATFORM_URL/cloudview-api/rest/v1/$PROVIDER/connectors"   # match $SCOPE_ID -> <CONNECTOR_ID>
 
 # 1) CREAR + correr el Assessment Report (POST = mutación -> lo corre el cliente) -> <REPORT_ID>
-curl -s -X POST -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -H "X-Requested-With: qley21719" -H "Content-Type: application/json" \
   "$PLATFORM_URL/cloudview-api/rest/v1/report/assessment/create" \
   -d '{
@@ -284,12 +291,12 @@ curl -s -X POST -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \
   }'
 
 # 2) POLL estado hasta "status":"Completed" (Accepted->Processing->Generated->Completed|Failed)
-curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-Requested-With: qley21719" \
   -H "Accept: application/json" \
   "$PLATFORM_URL/cloudview-api/rest/v1/report/assessment/list?reportId=<REPORT_ID>"
 
 # 3) DESCARGAR (CSV o PDF)
-curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-Requested-With: qley21719" \
   "$PLATFORM_URL/cloudview-api/rest/v1/report/assessment/<REPORT_ID>/download?reportFormat=csv" \
   -o "ley21719-assessment-<cliente>-$CLOUD_TYPE.csv"
 
@@ -310,14 +317,14 @@ NIST 800-53 / GDPR) como evidencia.
 
 ```bash
 # a) descubrir el mandateId afín y las policies soportadas por cloudType
-curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-Requested-With: qley21719" \
   -H "Accept: application/json" "$PLATFORM_URL/cloudview-api/rest/v1/reports/mandates"
-curl -s -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" -H "X-Requested-With: qley21719" \
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-Requested-With: qley21719" \
   -H "Accept: application/json" \
   "$PLATFORM_URL/cloudview-api/rest/v1/reports/policies?cloudType=$CLOUD_TYPE"
 
 # b) crear el mandate report (POST)
-curl -s -X POST -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   -H "X-Requested-With: qley21719" -H "Content-Type: application/json" \
   "$PLATFORM_URL/cloudview-api/rest/v1/reports" \
   -d '{ "cloudType":"'"$CLOUD_TYPE"'", "type":"<MANDATE_BASED>", "mandateId":"<MANDATE_ID>",
