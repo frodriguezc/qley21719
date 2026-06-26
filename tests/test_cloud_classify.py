@@ -184,15 +184,17 @@ def test_apply_instructions_report_api_section_aws():
     assert "docs.qualys.com/en/cloudview/latest/reports/" in md
 
 
-def test_apply_instructions_report_api_section_oci_caveat():
-    # OCI: la guía API vigente admite cloudType OCI, pero el smoke no lo ejercitó en reportes ->
-    # la doc debe marcar "no ejercitado / confirma" + fallback de consola.
+def test_apply_instructions_oci_confirmed_and_mandate_download_console():
+    # OCI: el audit (jun-2026) lo CONFIRMÓ por API (cloudType=OCI aceptado) -> la doc lo marca
+    # confirmado, NO "no ejercitado"; y el único paso sin API es la descarga del Mandate (consola,
+    # todos los providers).
     with tempfile.TemporaryDirectory() as d:
         build_pack([], {}, SPEC, d, provider="oci", account="ocid1.tenancy.oc1..xxxx")
         md = (Path(d) / "apply-instructions.md").read_text(encoding="utf-8")
     assert "PROVIDER=oci CLOUD_TYPE=OCI" in md
-    assert "smoke no lo ejercitó" in md                         # callout de caveat OCI (no ejercitado)
-    assert "usa el flujo de **consola**" in md
+    assert "OCI confirmado por API" in md                       # área 2: confirmado por el audit
+    assert "smoke no lo ejercitó" not in md                     # caveat viejo (pesimista) removido
+    assert "Descarga del Mandate Report = solo consola" in md   # área 1: download del mandate sin API
 
 
 def _run():

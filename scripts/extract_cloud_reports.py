@@ -243,9 +243,11 @@ def _run_mandate(client, body: dict, label: str, log) -> dict:
         log.info(f"{label} mandate create FAILED http={code} :: {text[:200]}")
         return {"ok": False, "stage": "create", "http": code, "detail": text[:300]}
     rid = _first(json.loads(text) if text.strip().startswith("{") else {}, _REPORT_ID_KEYS)
-    log.info(f"{label} mandate creado reportId={rid or '(s/id)'} — descarga el PDF desde la consola "
-             f"(Reports) si el tenant no expone download por API")
-    return {"ok": True, "report_id": rid, "note": "download del mandate vía consola"}
+    log.info(f"{label} mandate creado reportId={rid or '(s/id)'} — el download del Mandate NO tiene "
+             f"API en ningún provider (audit: /reports/* no expone descarga): baja el PDF de la "
+             f"consola → TotalCloud → Reports → buscar por título/reportId → estado Completed → Download")
+    return {"ok": True, "report_id": rid,
+            "note": "mandate creado por API; descarga solo por consola (sin API en /reports/*)"}
 
 
 # --------------------------------------------------------------------------------------
@@ -376,7 +378,7 @@ def main(argv=None, client=None) -> int:
                 tag = "✓" if ok else "✗"
                 extra = ""
                 if not ok and prov == "oci":
-                    extra = "  (⚠️ OCI en reportes no ejercitado en el smoke → revisa; fallback: consola)"
+                    extra = "  (OCI soportado por API — cloudType=OCI confirmado; el error de arriba es real, no 'OCI no soportado')"
                 print(f"  [{tag}] {label} {kind}{(' -> ' + r.get('path')) if r.get('path') else ''}"
                       f"{extra}", flush=True)
                 summary.append({"label": label, "kind": kind, **r})

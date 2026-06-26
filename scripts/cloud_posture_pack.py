@@ -135,8 +135,26 @@ def _diagnose_posture(http_status: int, controls: list, posture: dict) -> tuple[
     if evaluated == 0:
         return "not_evaluated", (f"HTTP 200 con {len(controls)} control(es) pero TODOS "
                                  "NOT_EVALUATED — CSPM activo, el connector aún no corrió la "
-                                 'evaluación. Acción: "Run Connector" en la consola.')
+                                 'evaluación. Acción: "Run Connector" (ver detalle abajo).')
     return "ok", f"HTTP 200 · {evaluated}/{len(controls)} control(es) evaluado(s)"
+
+
+def _run_connector_hint(provider: str, account: str) -> str:
+    """Acción provider-aware para 'Run Connector' (audit jun-2026). AWS/Azure/GCP tienen API de run
+    (`GET /qps/rest/3.0/run/am/<prov>assetdataconnector/<connectorId>`, Basic); **OCI no la tiene**
+    (límite Qualys) → solo consola. Es una MUTACIÓN → la herramienta NO la dispara; el operador la
+    corre. `account` es la cuenta/tenant (no el connectorId del run) → se deja como placeholder."""
+    p = (provider or "").lower().strip()
+    if p in ("aws", "azure", "gcp"):
+        return (f"    → Run Connector POR API: GET <platform>/qps/rest/3.0/run/am/{p}"
+                f"assetdataconnector/<connectorId> (Basic auth, qualysapi.<pod>). O consola: "
+                f"TotalCloud → Connectors → hover → Actions → Run Connector. Esperar FINISHED_SUCCESS "
+                f"y re-correr esta herramienta.")
+    if p == "oci":
+        return ("    → OCI NO tiene API de Run Connector (límite Qualys) → consola: TotalCloud → "
+                "Connectors → hover sobre el connector OCI → Actions → Run Connector (sincroniza "
+                "inventario y dispara la evaluación de postura). Esperar FINISHED_SUCCESS y re-correr.")
+    return "    → Run Connector: consola → TotalCloud → Connectors → hover → Actions → Run Connector."
 
 
 def _run_one(client, spec, provider, account, out_base, log=None):
@@ -154,6 +172,11 @@ def _run_one(client, spec, provider, account, out_base, log=None):
     if log is not None:
         log.info(f"{provider}/{account} posture_state={state} http={http_status} "
                  f"controls={len(controls)} :: {why}")
+    if state == "not_evaluated":                      # acción provider-aware (API vs consola; audit jun-2026)
+        hint = _run_connector_hint(provider, account)
+        print(hint, flush=True)
+        if log is not None:
+            log.info(f"{provider}/{account} run_connector_hint :: {hint.strip()}")
     out_dir = str(Path(out_base) / provider / (account or "default"))
     stats = build_pack(controls, posture, spec, out_dir, provider=provider, account=account)
     print(f"  [{provider}/{account}] {stats['controls']} ctrl · {stats['evaluated']} eval · "
