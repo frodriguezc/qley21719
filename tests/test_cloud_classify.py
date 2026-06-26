@@ -169,8 +169,11 @@ def test_apply_instructions_report_api_section_aws():
     assert "/cloudview-api/rest/v1/reports/mandates" in md      # mandate report
     # provider-aware: sustituye PROVIDER/CLOUD_TYPE/SCOPE_ID del scope
     assert "PROVIDER=aws CLOUD_TYPE=AWS SCOPE_ID=687245677417" in md
-    # host correcto (portal, no FO) y prerrequisito de permiso
-    assert "qualysguard.<seg>.apps.qualys.com" in md
+    # host + auth correctos (API Gateway + JWT Bearer, NO el FO ni el portal con Basic) + permiso
+    assert "gateway.<seg>.apps.qualys.com" in md
+    assert "Authorization: Bearer" in md and "POST /auth" in md
+    assert "HTTP Basic" not in md                               # auth stale corregida
+    assert "extract_cloud_reports.py" in md                     # puntero a la automatización
     assert "Reporting Permission" in md
     # human-gate / read-only honesto: es POST = mutación que corre el cliente
     assert "MUTACIÓN" in md and "la herramienta NO lo" in md
