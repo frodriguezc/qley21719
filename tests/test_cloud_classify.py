@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cloud_pack.generator import (  # noqa: E402
-    build_pack, classify_control, load_spec, parse_controls, parse_evaluations,
+    _html_to_text, build_pack, classify_control, load_spec, parse_controls, parse_evaluations,
 )
 
 SPEC = load_spec()
@@ -195,6 +195,36 @@ def test_apply_instructions_oci_confirmed_and_mandate_download_console():
     assert "OCI confirmado por API" in md                       # área 2: confirmado por el audit
     assert "smoke no lo ejercitó" not in md                     # caveat viejo (pesimista) removido
     assert "Descarga del Mandate Report = solo consola" in md   # área 1: download del mandate sin API
+
+
+def test_html_to_text_strips_and_joins():
+    h = "<p><strong>Hacer:</strong></p> <ol> <li>Paso&nbsp;uno</li> <li>Paso dos</li> </ol>"
+    t = _html_to_text(h)
+    assert "<" not in t and ">" not in t          # sin tags
+    assert "Paso uno" in t and "Paso dos" in t     # texto preservado (&nbsp; -> espacio)
+    assert "·" in t                                # los <li> quedan separados
+    assert _html_to_text("") == "" and _html_to_text(None) == ""
+
+
+def test_build_pack_remediation_column():
+    controls = [{"cid": "40001", "name": "Ensure Secure Boot", "criticality": "MEDIUM", "benchmark": "CIS OCI"}]
+    posture = {"40001": "FAIL"}
+    remediation = {"40001": "OCI Console: enable Secure Boot at instance creation"}
+    with tempfile.TemporaryDirectory() as d:
+        build_pack(controls, posture, SPEC, d, provider="oci", account="ocid1..x", remediation=remediation)
+        m = (Path(d) / "mapping.csv").read_text(encoding="utf-8")
+        f = (Path(d) / "fails.csv").read_text(encoding="utf-8")
+    assert "remediation" in m.splitlines()[0]                          # header con la columna nueva
+    assert "enable Secure Boot at instance creation" in m
+    assert "enable Secure Boot at instance creation" in f             # fails.csv también la lleva
+
+
+def test_build_pack_remediation_optional():
+    # sin remediation -> la columna existe pero vacía (fail-soft, no rompe)
+    with tempfile.TemporaryDirectory() as d:
+        build_pack([{"cid": "1", "name": "X", "benchmark": "b"}], {"1": "FAIL"}, SPEC, d)
+        header = (Path(d) / "mapping.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "remediation" in header
 
 
 def _run():

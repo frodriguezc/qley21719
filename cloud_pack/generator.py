@@ -16,8 +16,10 @@ tenant live en este repo -> se toleran variantes ({data:[...]}, listas planas, c
 from __future__ import annotations
 
 import csv
+import html
 import json
 import os
+import re
 from collections import OrderedDict
 
 import yaml
@@ -114,6 +116,21 @@ def parse_controls(text_or_obj) -> list[dict]:
     return out
 
 
+def _html_to_text(s: str) -> str:
+    """HTML de Qualys (manualRemediation/rationale vienen con <p>/<ol>/<li>/<br>) -> texto plano
+    de UNA línea apto para celda CSV. Determinista, solo stdlib (el repo es requests+pyyaml).
+    Cierres de bloque y <br> -> ' · '; resto de tags fuera; entidades des-escapadas; colapsa."""
+    if not s:
+        return ""
+    t = re.sub(r"(?i)</(li|p|tr|div|h\d|ul|ol)\s*>", " · ", s)
+    t = re.sub(r"(?i)<br\s*/?>", " · ", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = html.unescape(t)
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"(?:\s*·\s*){2,}", " · ", t).strip(" ·\t")
+    return t
+
+
 def parse_evaluations(text_or_obj) -> dict:
     """JSON de evaluations/{account} -> {cid: 'PASS'|'FAIL'|'<raw>'}."""
     blob = json.loads(text_or_obj) if isinstance(text_or_obj, str) else text_or_obj
@@ -137,10 +154,13 @@ def _articles_by_family(spec: dict) -> dict:
 
 
 def build_pack(controls: list[dict], posture: dict, spec: dict, out_dir: str,
-               provider: str = "", account: str = "") -> dict:
+               provider: str = "", account: str = "", remediation: dict | None = None) -> dict:
     """Clasifica los controles, cruza con el posture (PASS/FAIL) y emite el pack read-only.
+    `remediation` = {cid: texto} de la metadata de control (manualRemediation, ya HTML->texto) para
+    la columna accionable de mapping.csv/fails.csv; vacío = columna en blanco (fail-soft).
     Devuelve stats. NO muta nada; el cliente aplica por UI (human-gate)."""
     os.makedirs(out_dir, exist_ok=True)
+    remediation = remediation or {}
     arts = _articles_by_family(spec)
     fam_order = [f["id"] for f in spec.get("families", [])]
 
@@ -161,12 +181,13 @@ def build_pack(controls: list[dict], posture: dict, spec: dict, out_dir: str,
             "service": c.get("service", ""), "benchmark": c.get("benchmark", ""),
             "family": fid or "", "route": route,
             "law_articles": "; ".join(arts.get(fid, [])) if fid else "",
-            "posture": result, "provider": provider, "account": account,
+            "posture": result, "remediation": remediation.get(c["cid"], ""),
+            "provider": provider, "account": account,
         })
 
     # mapping.csv
     cols = ["cid", "control_name", "criticality", "service", "benchmark", "family",
-            "route", "law_articles", "posture", "provider", "account"]
+            "route", "law_articles", "posture", "remediation", "provider", "account"]
     with open(os.path.join(out_dir, "mapping.csv"), "w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()
