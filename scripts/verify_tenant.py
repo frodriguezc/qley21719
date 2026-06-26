@@ -121,9 +121,19 @@ def main(argv=None) -> int:
     print("\n# 2. OCI live (§7 #5) + # 3. CIDs a nivel tenant (B3) — connectors + evaluations")
     any_oci = False
     for prov in providers:
-        accounts = [args.account] if args.account else _discover_accounts(client, prov)
+        if args.account:
+            accounts, disc = [args.account], ("ok", "cuenta provista por --account")
+        else:
+            accounts, disc = _discover_accounts(client, prov)
         if not accounts:
-            print(f"  [skip] {prov}: sin connectors/cuentas")
+            disc_state, disc_why = disc
+            # distinguir 401/403 (auth/permiso CSPM) de "200 sin connectors" — no colapsar en skip.
+            if disc_state == "auth":
+                print(f"  [auth] {prov}: 🔐 {disc_why}")
+            elif disc_state == "error":
+                print(f"  [error] {prov}: ⚠️ {disc_why}")
+            else:
+                print(f"  [skip] {prov}: sin connectors/cuentas")
             continue
         if prov == "oci":
             any_oci = True
