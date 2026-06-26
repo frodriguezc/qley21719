@@ -4,6 +4,7 @@ flujo create/poll/download + el human-gate (DRY-RUN no hace POST; --run sí). Si
 FakeClient que devuelve (code, text). Corre standalone (como en CI) y bajo pytest.
 """
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -172,6 +173,42 @@ def test_main_run_oci_fallback_no_crashea():
         rc = ecr.main(["--provider", "oci", "--reports", "assessment", "--out", d,
                        "--poll-interval", "0", "--create-gap", "0", "--run"], client=c)
     assert rc == 0 and c.mutations == 1          # intentó el create, lo reportó, no abortó
+
+
+# ------------------------------------------------------------- multi-tenant (TENANT)
+
+def test_tenant_env_carga_envfile():
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / ".env.demo").write_text(
+            "QUALYS_POD=US03\nQUALYS_API_USER=u\nQUALYS_API_PASSWORD=p\n")
+        slug, vals = ecr._tenant_env("demo", d)
+    assert slug == "demo"
+    assert vals == {"QUALYS_POD": "US03", "QUALYS_API_USER": "u", "QUALYS_API_PASSWORD": "p"}
+
+
+def test_tenant_env_sin_archivo():
+    with tempfile.TemporaryDirectory() as d:
+        slug, vals = ecr._tenant_env("sinacofi", d)
+    assert slug == "sinacofi" and vals == {}
+
+
+def test_tenant_env_sin_tenant():
+    assert ecr._tenant_env("", "/tmp") == (None, {})
+
+
+def test_main_tenant_aisla_salida():
+    c = FakeClient(conns_oci=_OCI_CONNS, policies=_POLICIES, mandates=_MANDATES)
+    saved = os.environ.get("TENANT")
+    try:
+        os.environ["TENANT"] = "demo"
+        with tempfile.TemporaryDirectory() as d:
+            rc = ecr.main(["--provider", "oci", "--out", d], client=c)
+            assert rc == 0 and (Path(d) / "demo").is_dir()   # <out>/<slug>/<run_id>
+    finally:
+        if saved is None:
+            os.environ.pop("TENANT", None)
+        else:
+            os.environ["TENANT"] = saved
 
 
 # helper: corre _run_assessment con sleep no-op y un log mudo
