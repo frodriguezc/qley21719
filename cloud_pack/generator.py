@@ -154,13 +154,13 @@ def _articles_by_family(spec: dict) -> dict:
 
 
 def build_pack(controls: list[dict], posture: dict, spec: dict, out_dir: str,
-               provider: str = "", account: str = "", remediation: dict | None = None) -> dict:
+               provider: str = "", account: str = "", control_meta: dict | None = None) -> dict:
     """Clasifica los controles, cruza con el posture (PASS/FAIL) y emite el pack read-only.
-    `remediation` = {cid: texto} de la metadata de control (manualRemediation, ya HTML->texto) para
-    la columna accionable de mapping.csv/fails.csv; vacío = columna en blanco (fail-soft).
-    Devuelve stats. NO muta nada; el cliente aplica por UI (human-gate)."""
+    `control_meta` = {cid: {remediation, rationale, references}} de la metadata de control (ya
+    HTML->texto) para las columnas accionables de mapping.csv/fails.csv; vacío = columnas en blanco
+    (fail-soft). Devuelve stats. NO muta nada; el cliente aplica por UI (human-gate)."""
     os.makedirs(out_dir, exist_ok=True)
-    remediation = remediation or {}
+    control_meta = control_meta or {}
     arts = _articles_by_family(spec)
     fam_order = [f["id"] for f in spec.get("families", [])]
 
@@ -176,18 +176,22 @@ def build_pack(controls: list[dict], posture: dict, spec: dict, out_dir: str,
             by_family.setdefault(fid, []).append(c["cid"])
         if route in ("default", "unmatched"):
             gaps.append({**c, "family": fid or "", "route": route})
+        cm = control_meta.get(c["cid"], {})
         rows.append({
             "cid": c["cid"], "control_name": c["name"], "criticality": c.get("criticality", ""),
             "service": c.get("service", ""), "benchmark": c.get("benchmark", ""),
             "family": fid or "", "route": route,
             "law_articles": "; ".join(arts.get(fid, [])) if fid else "",
-            "posture": result, "remediation": remediation.get(c["cid"], ""),
+            "posture": result,
+            "remediation": cm.get("remediation", ""), "rationale": cm.get("rationale", ""),
+            "references": cm.get("references", ""),
             "provider": provider, "account": account,
         })
 
     # mapping.csv
     cols = ["cid", "control_name", "criticality", "service", "benchmark", "family",
-            "route", "law_articles", "posture", "remediation", "provider", "account"]
+            "route", "law_articles", "posture", "remediation", "rationale", "references",
+            "provider", "account"]
     with open(os.path.join(out_dir, "mapping.csv"), "w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()
