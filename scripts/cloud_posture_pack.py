@@ -159,11 +159,11 @@ def _run_connector_hint(provider: str, account: str) -> str:
 
 
 def _fetch_control_metadata(client, page_size=500, max_pages=20) -> dict:
-    """Best-effort: {cid: remediation(texto)} desde controls/metadata/list (campo manualRemediation,
-    HTML->texto). Es la librería GLOBAL de controles CSPM (~1.4k, todos los providers) -> se baja una
-    vez por corrida y se joinea por cid == controlId de las evaluations. Read-only (GET). 401/403/
-    error/schema viejo -> {} (la columna `remediation` queda vacía; la metadata de control es un
-    permiso aparte que no todo tenant tiene)."""
+    """Best-effort: {cid: {remediation, rationale, references}} desde controls/metadata/list (campos
+    manualRemediation / rationale / references, todos HTML->texto). Es la librería GLOBAL de controles
+    CSPM (~1.4k, todos los providers) -> se baja una vez por corrida y se joinea por cid == controlId
+    de las evaluations. Read-only (GET). 401/403/error/schema viejo -> {} (las columnas quedan vacías;
+    la metadata de control es un permiso aparte que no todo tenant tiene)."""
     out: dict = {}
     try:
         for page in range(max_pages):
@@ -176,7 +176,11 @@ def _fetch_control_metadata(client, page_size=500, max_pages=20) -> dict:
             for it in ctrls:
                 cid = str(it.get("cid", "")).strip()
                 if cid:
-                    out[cid] = _html_to_text(it.get("manualRemediation") or "")
+                    out[cid] = {
+                        "remediation": _html_to_text(it.get("manualRemediation") or ""),
+                        "rationale": _html_to_text(it.get("rationale") or ""),
+                        "references": _html_to_text(it.get("references") or ""),
+                    }
             if len(ctrls) < page_size:
                 break
     except Exception:
@@ -184,7 +188,7 @@ def _fetch_control_metadata(client, page_size=500, max_pages=20) -> dict:
     return out
 
 
-def _run_one(client, spec, provider, account, out_base, log=None, remediation=None):
+def _run_one(client, spec, provider, account, out_base, log=None, control_meta=None):
     """Corre el pipeline para una cuenta: fetch evaluations -> classify -> emit. Read-only.
     Loguea de forma DISTINGUIBLE cuál de los 3 casos de posture ocurrió (auth/empty/not_evaluated/
     ok), por provider/cuenta, tanto a stdout como al run.log."""
@@ -206,7 +210,7 @@ def _run_one(client, spec, provider, account, out_base, log=None, remediation=No
             log.info(f"{provider}/{account} run_connector_hint :: {hint.strip()}")
     out_dir = str(Path(out_base) / provider / (account or "default"))
     stats = build_pack(controls, posture, spec, out_dir, provider=provider, account=account,
-                       remediation=remediation)
+                       control_meta=control_meta)
     print(f"  [{provider}/{account}] {stats['controls']} ctrl · {stats['evaluated']} eval · "
           f"{stats['fails']} FAIL · {stats['gaps']} a revisar · {stats['by_family']}", flush=True)
     return {"provider": provider, "account": account, "out_dir": out_dir,
@@ -265,12 +269,14 @@ def main(argv=None) -> int:
         client = cv_from_env(server=args.server)
     print(f"[cloud] host={client.server}", flush=True)
 
-    # Metadata global de controles (remediación) — una vez por corrida; best-effort (puede 401).
-    remediation = _fetch_control_metadata(client)
-    print(f"[cloud] metadata: {len(remediation)} control(es) con remediación"
-          if remediation else "[cloud] metadata de control no accesible — columna 'remediation' vacía",
+    # Metadata global de controles (remediación / rationale / references) — una vez por corrida;
+    # best-effort (puede 401: es un permiso aparte).
+    control_meta = _fetch_control_metadata(client)
+    print(f"[cloud] metadata: {len(control_meta)} control(es) con remediación/rationale/refs"
+          if control_meta else
+          "[cloud] metadata de control no accesible — columnas remediation/rationale/references vacías",
           flush=True)
-    log.info(f"control_metadata remediation_controls={len(remediation)}")
+    log.info(f"control_metadata controls={len(control_meta)}")
 
     providers = ["aws", "azure", "gcp", "oci"] if args.provider == "all" else [args.provider]
     ran = 0
@@ -295,7 +301,7 @@ def main(argv=None) -> int:
             continue
         for acct in accounts:
             try:
-                r = _run_one(client, spec, prov, acct, out_base, log=log, remediation=remediation)
+                r = _run_one(client, spec, prov, acct, out_base, log=log, control_meta=control_meta)
                 log.info(f"{prov}/{acct} posture={r['posture_state']} controls={r['controls']} "
                          f"evaluated={r['evaluated']} fails={r['fails']} gaps={r['gaps']}")
                 ran += 1

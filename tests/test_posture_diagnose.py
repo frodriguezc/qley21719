@@ -191,13 +191,15 @@ class FakeMetaClient:
         return self._pages[i] if i < len(self._pages) else (200, '{"control":[]}')
 
 
-def test_fetch_control_metadata_builds_cid_to_remediation():
+def test_fetch_control_metadata_builds_cid_to_meta():
     page0 = json.dumps({"control": [
-        {"cid": 40001, "manualRemediation": "<p>Hacer <b>X</b></p><ol><li>paso1</li></ol>"},
+        {"cid": 40001, "manualRemediation": "<p>Hacer <b>X</b></p><ol><li>paso1</li></ol>",
+         "rationale": "<p>porque Y</p>", "references": "CIS 4.1"},
         {"cid": 40037, "manualRemediation": "texto plano"}]})
     m = cpp._fetch_control_metadata(FakeMetaClient([(200, page0)]))
-    assert "Hacer X" in m["40001"] and "<" not in m["40001"]    # HTML -> texto
-    assert m["40037"] == "texto plano"
+    assert "Hacer X" in m["40001"]["remediation"] and "<" not in m["40001"]["remediation"]
+    assert m["40001"]["rationale"] == "porque Y" and m["40001"]["references"] == "CIS 4.1"
+    assert m["40037"]["remediation"] == "texto plano" and m["40037"]["rationale"] == ""
 
 
 def test_fetch_control_metadata_auth_failsoft():
