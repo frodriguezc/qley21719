@@ -44,9 +44,13 @@ scripts/verify_tenant.py          [CSPM] sonda READ-ONLY del tenant (rol Reader 
 Las matrices CSV son DERIVADAS (no editar a mano: regenerar con su builder). Motor CSPM: la **auth
 y la detección** se verificaron contra un tenant live (jun-2026) — va por el **API Gateway + JWT**
 (`gateway.<pod>`, `POST /auth` → `Bearer`), NO Basic contra `qualysguard` (eso daba 401 en un tenant
-real). El **harvest con connectors** (controls/metadata + evaluations) sigue sin verificar live (el
-tenant de prueba tenía 0 connectors y al API user le falta el permiso de control-library); parsers
-defensivos. Ver DESIGN-cloud-posture.md §7.
+real). El **harvest también se ejerció live** (US03, `scripts/verify_tenant.py`, credencial Manager):
+`controls/metadata` + **AWS/GCP `evaluations` = 200**, con el core Evaluations devolviendo 168 controles
+AWS y paginación Spring bajo `content`. El 401 de `controls/metadata` del primer intento era un permiso
+de **control-library** que ESE API user no tenía (con el permiso/rol correcto da 200); parsers
+defensivos. Residuales: **OCI no se ejerció live** (connectors OCI por Connector Mgmt 3.0; eval/reportes a
+confirmar en un tenant con OCI onboardeado) y falta un run **Reader-scoped** (aún no hay API user Reader).
+Ver DESIGN-cloud-posture.md §7.
 
 ## 3. Guardrails (INVARIANTES — no romper)
 
