@@ -17,11 +17,13 @@ el **API Gateway** `gateway.<seg>.apps.qualys.*`: se obtiene un token con `POST 
 `Authorization: Bearer <jwt>`. El único POST que hace el cliente es ese `/auth` (emisión de
 token; NO muta el tenant); todos los datos son GET allow-list-only. El password nunca se loguea.
 
-> VERIFICADO LIVE US03 (2026-06): `POST gateway.qg3/auth` -> 201 + JWT; `/aws|azure|gcp/connectors`
-> -> 200. (El approach anterior —Basic contra `qualysguard.qg3`— daba 401 contra un tenant real;
-> el "200" histórico era un artefacto y se corrigió.) `controls/metadata/list` puede dar 401 aun con
-> JWT válido si el API user no tiene el permiso de control-library de CloudView (es otro permiso);
-> el harvest solo lo consulta cuando hay connectors -> se verifica en un tenant con cuentas cloud.
+> VERIFICADO LIVE US03 (2026-06, `scripts/verify_tenant.py`, credencial Manager): `POST gateway.qg3/auth`
+> -> 201 + JWT; `/aws|azure|gcp/connectors` -> 200; `controls/metadata/list` -> 200 y `aws|gcp/evaluations/
+> {account}` -> 200 (core verificado: 168 controles AWS, paginación Spring bajo `content`). (El approach
+> anterior —Basic contra `qualysguard.qg3`— daba 401 contra un tenant real; el "200" histórico era un
+> artefacto y se corrigió.) `controls/metadata/list` puede dar 401 aun con JWT válido si el API user NO
+> tiene el permiso de control-library de CloudView (es otro permiso): con el permiso/rol correcto da 200.
+> Residual: OCI no se ejerció live (eval/reportes a confirmar en un tenant con OCI onboardeado).
 
 Endpoints verificados vs la coleccion Postman v1.23.0.0 + la guia TotalCloud/CloudView API
 vigente (docs.qualys.com/en/tc/api, jun-2026); ver mapping/platform_coverage.yaml `cspm_api`.
