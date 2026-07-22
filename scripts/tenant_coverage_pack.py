@@ -384,6 +384,8 @@ def _import_howto() -> list[str]:
         "Tras importar TODOS los benchmarks faltantes:",
         "  - Re-correr este generador para que los nuevos benchmarks entren al policy.xml de la Ley, y",
         "  - importar/actualizar la policy de la Ley por API: subir.sh (nueva) o subir-merge.sh (in-place).",
+        "    (Si el policy.xml supera 4 MiB, la API rechaza el import —CODE 1910—; subir.sh te derivará",
+        "     a importarla por consola: Policies > New > Policy > Import from XML, que no tiene ese tope.)",
         "",
     ]
 
@@ -463,23 +465,66 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, fleet: dict,
     path.write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
+# La API v4.0 fo/compliance/policy?action=import|merge trunca el POST a 4 MiB (medido
+# 2026-07): un policy.xml mayor entra CORTADO y el server responde CODE 1910 ("Premature
+# end of data") — NO es un error de permiso. subir.sh / subir-merge.sh detectan el tamaño y,
+# si supera el tope, derivan al GUI Import from XML (que no tiene ese límite).
+_API_MAX_BYTES = 4194304  # 4 MiB
+
+
+def _import_size_guard_lines() -> list[str]:
+    """Líneas bash compartidas por subir.sh / subir-merge.sh: `_too_big <xml>` es verdadero
+    (rc 0) si el policy.xml supera el tope de 4 MiB del import por API (o falta el archivo);
+    avisa + ruta GUI por stderr. `_fsize` es portátil macOS (stat -f%z) / Linux (stat -c%s)."""
+    return [
+        f"API_MAX_BYTES={_API_MAX_BYTES}   # 4 MiB — tope duro (medido) del body del import por API v4.0",
+        '_fsize(){ stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || true; }',
+        "# _too_big <xml> -> rc 0 si NO se puede importar por API (supera 4 MiB o falta el archivo).",
+        "_too_big(){",
+        '  local xml="$1" sz; sz="$(_fsize "$xml")"',
+        '  if [ -z "$sz" ]; then echo "✗ no existe o ilegible: $xml" >&2; return 0; fi',
+        '  if [ "$sz" -gt "$API_MAX_BYTES" ]; then',
+        '    echo "⚠ policy.xml = $sz bytes (> 4 MiB): la API v4.0 trunca el POST a 4 MiB y responde" >&2',
+        '    echo "  CODE 1910 (XML cortado). Importá por consola, sin ese límite:" >&2',
+        '    echo "  PC/PA > Policies > New > Policy > Import from XML → subí: $xml" >&2',
+        "    return 0",
+        "  fi",
+        "  return 1",
+        "}",
+        "",
+    ]
+
+
 def _write_subir_sh(path: Path, server: str, levels: dict, name: str) -> None:
     base = server.rstrip("/")
     lines = ["#!/usr/bin/env bash",
              "# Import de la policy generada (lo corre el CLIENTE — human-gate).",
              "# READ-ONLY de la herramienta: este paso NO lo ejecuta el generador.",
              "# Requiere QUALYS_API_USER / QUALYS_API_PASSWORD en el entorno.",
+             "#",
+             "# GOTCHA (medido): la API v4.0 fo/compliance/policy?action=import trunca el POST a 4 MiB.",
+             '# Un policy.xml > 4 MiB entra CORTADO y responde CODE 1910 ("Premature end of data") — NO',
+             "# es un error de permiso. Este script detecta el tamaño y deriva al GUI (Import from XML)",
+             "# cuando corresponde; sale con rc 3 si algún nivel quedó pendiente de importar por consola.",
              "set -euo pipefail", ""]
+    lines += _import_size_guard_lines()
+    lines += ["rc=0", ""]
     for lid, lv in levels.items():
         xml = Path(lv["out_dir"]) / "policy.xml"
         title = f"{name} ({lid})"
+        url = (f"{base}/api/4.0/fo/compliance/policy/?action=import"
+               f"&title={_q(title)}&create_user_controls=0")
         lines += [f'# --- nivel {lid} ({lv.get("included","?")} controles) ---',
-                  'curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
-                  '     -H "X-Requested-With: tenant-coverage-pack" \\',
-                  '     -H "Content-Type: text/xml" \\',
-                  f'     --data-binary @"{xml}" \\',
-                  f'     "{base}/api/4.0/fo/compliance/policy/?action=import'
-                  f'&title={_q(title)}&create_user_controls=0"', ""]
+                  f'if _too_big "{xml}"; then',
+                  "  rc=3",
+                  "else",
+                  '  curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
+                  '       -H "X-Requested-With: tenant-coverage-pack" \\',
+                  '       -H "Content-Type: text/xml" \\',
+                  f'       --data-binary @"{xml}" \\',
+                  f'       "{url}"',
+                  "fi", ""]
+    lines += ["exit $rc"]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     path.chmod(0o755)
 
@@ -517,7 +562,12 @@ def _write_subir_merge_sh(path: Path, server: str, levels: dict, name: str,
         "# comunes (status/criticidad/valores). Tus EXCEPCIONES y valores ajustados de esos CIDs se",
         "# pierden. Por eso el PASO 1 es un preview_merge=1 (no guarda nada): revisa el diff primero.",
         "# Para SUMAR cobertura sin tocar tu tuning, prefiere re-importar como policy nueva (subir.sh).",
+        "#",
+        "# GOTCHA (medido): el import/merge por API v4.0 trunca el POST a 4 MiB. Si el policy.xml supera",
+        "# ese tope, ni el preview ni el commit funcionan (CODE 1910). No hay merge in-place por GUI: la",
+        "# única vía para una policy > 4 MiB es Import from XML (crea una policy NUEVA — perdés el merge).",
         "set -euo pipefail", ""]
+    lines += _import_size_guard_lines()
     if existing_id:
         lines += [f'POLICY_ID="{existing_id}"   # policy Ley detectada en el tenant', ""]
     else:
@@ -530,19 +580,23 @@ def _write_subir_merge_sh(path: Path, server: str, levels: dict, name: str,
         url = f"{base}/api/4.0/fo/compliance/policy/?action=merge&id=$POLICY_ID&update_existing_controls=1"
         lines += [
             f'# --- nivel {lid} ({lv.get("included", "?")} controles) ---',
-            "# PASO 1 — PREVIEW (no guarda nada): revisa qué cambiaría.",
-            'curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
-            '     -H "X-Requested-With: tenant-coverage-pack" \\',
-            '     -H "Content-Type: text/xml" \\',
-            f'     --data-binary @"{xml}" \\',
-            f'     "{url}&preview_merge=1"',
+            f'if _too_big "{xml}"; then',
+            '  echo "  (merge por API imposible con > 4 MiB — ver nota de cabecera)" >&2',
+            "else",
+            "  # PASO 1 — PREVIEW (no guarda nada): revisa qué cambiaría.",
+            '  curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
+            '       -H "X-Requested-With: tenant-coverage-pack" \\',
+            '       -H "Content-Type: text/xml" \\',
+            f'       --data-binary @"{xml}" \\',
+            f'       "{url}&preview_merge=1"',
             "",
-            "# PASO 2 — COMMIT (descomentar SOLO tras revisar el preview):",
-            '# curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
-            '#      -H "X-Requested-With: tenant-coverage-pack" \\',
-            '#      -H "Content-Type: text/xml" \\',
-            f'#      --data-binary @"{xml}" \\',
-            f'#      "{url}"', ""]
+            "  # PASO 2 — COMMIT (descomentar SOLO tras revisar el preview):",
+            '  # curl -sS -u "$QUALYS_API_USER:$QUALYS_API_PASSWORD" \\',
+            '  #      -H "X-Requested-With: tenant-coverage-pack" \\',
+            '  #      -H "Content-Type: text/xml" \\',
+            f'  #      --data-binary @"{xml}" \\',
+            f'  #      "{url}"',
+            "fi", ""]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     path.chmod(0o755)
 
