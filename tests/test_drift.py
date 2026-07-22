@@ -117,6 +117,32 @@ def test_subir_merge_placeholder_when_no_single_match():
         assert "candidato id=1" in s and "candidato id=2" in s
 
 
+def test_subir_sh_has_4mib_guard_and_import():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "subir.sh"
+        tcp._write_subir_sh(p, "https://qualysapi.qg3.apps.qualys.com",
+                            _levels(tmp), "Ley 21.719 - ACME")
+        s = p.read_text()
+        # guard del cap de 4 MiB de la API + ruta GUI (Import from XML)
+        assert "API_MAX_BYTES=4194304" in s and "_too_big" in s
+        assert "Import from XML" in s
+        # el import por API sigue presente (para policies <= 4 MiB)
+        assert "action=import" in s and "create_user_controls=0" in s
+        # estructura: si es grande NO llama a la API (el curl va en el else)
+        assert "if _too_big" in s and "else" in s
+
+
+def test_subir_merge_has_4mib_guard():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "subir-merge.sh"
+        tcp._write_subir_merge_sh(p, "https://qualysapi.qg3.apps.qualys.com",
+                                  _levels(tmp), "Ley 21.719 - ACME", "555", [("555", "x")])
+        s = p.read_text()
+        assert "API_MAX_BYTES=4194304" in s and "_too_big" in s
+        # el preview sigue emitiéndose (bajo el else) y el commit comentado
+        assert "preview_merge=1" in s and "# curl -sS" in s
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
