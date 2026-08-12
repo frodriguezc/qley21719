@@ -75,7 +75,12 @@ GATEWAYS = {
 # Allow-list de paths de LECTURA (relativos a CV_BASE). Si ninguno matchea -> se rechaza.
 # Verificados vs Postman v1.23.0.0 + guia tc/api (jun-2026): controls/metadata, {aws|azure|gcp}
 # connectors/evaluations/{resources,stats}, groups, /oci/evaluations/?tenantId=, report assessment
-# list/download. Notas: /evaluations/stats confirmado para AWS/Azure/GCP (OCI no lo expone).
+# list/download. Notas: /evaluations/stats confirmado para AWS/Azure/GCP (OCI no lo expone), y
+# /evaluations/{acct}/resources/{controlId} TAMPOCO existe para OCI: VERIFICADO live 2026-08-12 ->
+# 404 "No static resource" (el patrón de abajo cubre oci por simetría, pero contra el tenant no
+# resuelve). Consecuencia práctica: en OCI el pack NO puede nombrar el recurso que falla un control
+# (p.ej. qué bucket es público en el CID 40003); ese detalle sale de la consola OCI, del oci CLI, o
+# del REPORTE de assessment (resourceSummaryInclude, POST -> human-gate del cliente).
 # Connectors: cloudview-api expone /{aws|azure|gcp}/connectors (200), pero /oci/connectors NO existe
 # (404, VERIFICADO live) y OCI tampoco está en QPS -> los connectors (incl. OCI) se listan por la
 # Connector Management API `GET /connectors/v1.0/<TYPE>/list` (ver `list_cloud_connectors`). El
