@@ -48,11 +48,13 @@ real). El **harvest también se ejerció live** (US03, `scripts/verify_tenant.py
 `controls/metadata` + **AWS/GCP `evaluations` = 200**, con el core Evaluations devolviendo 168 controles
 AWS y paginación Spring bajo `content`. El 401 de `controls/metadata` del primer intento era un permiso
 de **control-library** que ESE API user no tenía (con el permiso/rol correcto da 200); parsers
-defensivos. **OCI también se ejerció live** (ago-2026, tenant US03 con OCI onboardeado): discovery por
+defensivos. **OCI se ejerció live desde el 2026-06-27** (tenant US03 con OCI onboardeado): discovery por
 `connectors/v1.0/OCI/list` (Connector Mgmt 3.0; el `/oci/connectors` de v1 no se usa) +
-`GET /oci/evaluations/?tenantId=` = **200**, 82/82 controles evaluados y clasificados. Residuales: los
-**reportes** OCI (`create_report` con `cloudType=OCI`, POST → human-gate) y un run **Reader-scoped**
-(aún no hay API user Reader). Ver DESIGN-cloud-posture.md §7.
+`GET /oci/evaluations/?tenantId=` = **200**, 78/78 controles evaluados y clasificados; re-confirmado el
+2026-08-12 con 82/82 (la librería CIS OCI creció 4 controles). El `verify_tenant.py` del 2026-06-25 corrió
+contra un tenant AWS+GCP, de ahí el viejo "OCI no ejercitado". Residuales: los **reportes** OCI
+(`create_report` con `cloudType=OCI`, POST → human-gate) y un run **Reader-scoped** (aún no hay API user
+Reader). Ver DESIGN-cloud-posture.md §7.
 
 ## 3. Guardrails (INVARIANTES — no romper)
 
