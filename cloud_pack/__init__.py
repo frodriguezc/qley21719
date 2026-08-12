@@ -6,6 +6,8 @@ allow-list-only) y emite un mapping report (control cloud -> familia legal -> ar
 PASS/FAIL) + gaps + apply-instructions. El cliente aplica por UI (human-gate). Ver
 DESIGN-cloud-posture.md y mapping/ley21719-cloud.yaml.
 """
-from .generator import classify_control, parse_controls, parse_evaluations, build_pack
+from .generator import (classify_control, parse_controls, parse_evaluations,
+                        parse_resource_counts, build_pack)
 
-__all__ = ["classify_control", "parse_controls", "parse_evaluations", "build_pack"]
+__all__ = ["classify_control", "parse_controls", "parse_evaluations",
+           "parse_resource_counts", "build_pack"]

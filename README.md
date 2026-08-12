@@ -71,7 +71,7 @@ se versiona). Sin `TENANT` el comportamiento es el clásico de un solo tenant (`
 | 2 | `2-policy-xml/subir.sh` | El comando de import como **política nueva** — **lo corres tú** (human-gate). |
 | 2 | `2-policy-xml/subir-merge.sh` | Alternativa: **merge in-place** sobre una política Ley ya afinada, con **preview** primero (no guarda nada) — **lo corres tú**. Sobrescribe tu tuning de los controles comunes; si solo quieres sumar cobertura, usa `subir.sh`. |
 | 2 | `2-policy-xml/drift.md` | (con `--drift`) Diff **read-only** entre la política Ley ya importada y el pack regenerado: qué CIDs faltan, cuáles sobran y cuáles cambiaron. |
-| 3 | `3-cloud-posture-CSPM/<proveedor>/<cuenta>/` | Mapeo de postura cloud por cuenta: `mapping.csv` (control → familia → artículo, PASS/FAIL), `fails.csv`, `gaps.md`. |
+| 3 | `3-cloud-posture-CSPM/<proveedor>/<cuenta>/` | Mapeo de postura cloud por cuenta: `mapping.csv` (control → familia → artículo, PASS/FAIL + alcance: `failed_resources`/`total_resources`/`resource_summary`), `fails.csv`, `gaps.md`. |
 
 > `deliverables/` lleva el `policy.xml` (valores CIS endurecidos = **contenido licenciado**) y datos del
 > tenant → está **gitignored**: no se commitea. Es tu pack para subir a la plataforma.

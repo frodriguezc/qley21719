@@ -7,6 +7,7 @@ defensivos + build_pack en un tmp. No toca el tenant.
 """
 from __future__ import annotations
 
+import csv
 import json
 import sys
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cloud_pack.generator import (  # noqa: E402
     _html_to_text, build_pack, classify_control, load_spec, parse_controls, parse_evaluations,
+    parse_resource_counts,
 )
 
 SPEC = load_spec()
@@ -132,6 +134,63 @@ def test_parse_evaluations_normalizes_result():
     blob = {"content": [{"controlId": 11, "result": "fail"}, {"cid": 12, "controlResult": "PASS"}]}
     posture = parse_evaluations(blob)
     assert posture == {"11": "FAIL", "12": "PASS"}
+
+
+def test_parse_resource_counts_from_evaluations():
+    """Las evaluations traen el desglose por recurso (shape live OCI 2026-08-12)."""
+    blob = {"content": [
+        {"controlId": 40003, "result": "FAIL", "failedResources": 1,
+         "passedResources": 19, "passWithExceptionResources": 0},
+        {"controlId": 40102, "result": "FAIL", "failedResources": 3,
+         "passedResources": 0, "passWithExceptionResources": 2},
+        {"controlId": 999, "result": "PASS"},          # provider sin el desglose -> fuera del dict
+    ]}
+    counts = parse_resource_counts(blob)
+    assert counts["40003"] == {"failed": 1, "passed": 19,
+                               "pass_with_exception": 0, "total": 20}
+    assert counts["40102"]["total"] == 5               # 3 + 0 + 2
+    assert "999" not in counts, "sin campos de recurso NO se inventa un 0"
+
+
+def test_parse_resource_counts_tolerates_garbage():
+    blob = [{"controlId": 1, "failedResources": "2", "passedResources": None},
+            {"controlId": 2, "failedResources": "n/a"},
+            {"no_cid": True}]
+    counts = parse_resource_counts(blob)
+    assert counts["1"] == {"failed": 2, "passed": None,
+                           "pass_with_exception": None, "total": 2}
+    assert "2" not in counts                           # "n/a" -> None -> nada utilizable
+
+
+def test_build_pack_resource_columns():
+    """Las columnas de alcance permiten priorizar entre FAILs sin llamadas extra."""
+    controls = [{"cid": "40003", "name": "Ensure no Object Storage buckets are publicly visible",
+                 "criticality": "HIGH", "benchmark": "CIS"},
+                {"cid": "40102", "name": "Ensure no resources in root compartment",
+                 "criticality": "HIGH", "benchmark": "CIS"}]
+    posture = {"40003": "FAIL", "40102": "FAIL"}
+    counts = {"40003": {"failed": 1, "passed": 19, "pass_with_exception": 0, "total": 20}}
+    with tempfile.TemporaryDirectory() as d:
+        build_pack(controls, posture, SPEC, d, provider="oci", account="ocid1..x",
+                   resource_counts=counts)
+        rows = list(csv.DictReader((Path(d) / "fails.csv").open(encoding="utf-8")))
+        by_cid = {r["cid"]: r for r in rows}
+        assert by_cid["40003"]["failed_resources"] == "1"
+        assert by_cid["40003"]["total_resources"] == "20"
+        assert by_cid["40003"]["resource_summary"] == "1 de 20 recursos"
+        # sin datos -> columnas en blanco (fail-soft), NO ceros que mientan sobre el alcance
+        assert by_cid["40102"]["failed_resources"] == ""
+        assert by_cid["40102"]["resource_summary"] == ""
+
+
+def test_build_pack_resource_summary_marks_exceptions():
+    controls = [{"cid": "7", "name": "Ensure MFA on root account", "criticality": "HIGH"}]
+    counts = {"7": {"failed": 2, "passed": 5, "pass_with_exception": 3, "total": 10}}
+    with tempfile.TemporaryDirectory() as d:
+        build_pack(controls, {"7": "FAIL"}, SPEC, d, provider="aws", account="a",
+                   resource_counts=counts)
+        row = next(csv.DictReader((Path(d) / "fails.csv").open(encoding="utf-8")))
+        assert row["resource_summary"] == "2 de 10 recursos · 3 con excepción"
 
 
 def test_build_pack_emits_artifacts_and_stats():
