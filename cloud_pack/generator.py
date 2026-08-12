@@ -146,6 +146,55 @@ def parse_evaluations(text_or_obj) -> dict:
     return posture
 
 
+def _as_int(v) -> int | None:
+    """int tolerante: None/''/no-numérico -> None (columna en blanco, no un 0 mentiroso)."""
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_resource_counts(text_or_obj) -> dict:
+    """JSON de evaluations -> {cid: {failed, passed, pass_with_exception, total}}.
+
+    Las evaluations ya traen el desglose por recurso (`failedResources`/`passedResources`/
+    `passWithExceptionResources`, VERIFICADO live OCI 2026-08-12) — o sea que se puede decir
+    "falla en 1 de 20 recursos" SIN una llamada extra. NO da la IDENTIDAD del recurso: en OCI ese
+    detalle no existe por API read-only (`/evaluations/{acct}/resources/{cid}` -> 404), sale de la
+    consola, del CLI del proveedor o del reporte de assessment (POST -> human-gate).
+
+    Fail-soft: un control sin los campos queda FUERA del dict (columnas en blanco, no 0)."""
+    blob = json.loads(text_or_obj) if isinstance(text_or_obj, str) else text_or_obj
+    counts = {}
+    for e in _as_list(blob):
+        if not isinstance(e, dict):
+            continue
+        cid = str(_first(e, "cid", "controlId", "id", "control.id"))
+        if not cid:
+            continue
+        failed = _as_int(_first(e, "failedResources", "failed_resources"))
+        passed = _as_int(_first(e, "passedResources", "passed_resources"))
+        passe = _as_int(_first(e, "passWithExceptionResources", "pass_with_exception_resources"))
+        if failed is None and passed is None and passe is None:
+            continue                                   # el provider no lo expone -> no inventamos
+        total = sum(v for v in (failed, passed, passe) if v is not None)
+        counts[cid] = {"failed": failed, "passed": passed,
+                       "pass_with_exception": passe, "total": total}
+    return counts
+
+
+def _resource_summary(c: dict) -> str:
+    """'1 de 20 recursos' (+ '· N con excepción'). Vacío si no hay datos utilizables."""
+    if not c or c.get("failed") is None or not c.get("total"):
+        return ""
+    out = f"{c['failed']} de {c['total']} recursos"
+    if c.get("pass_with_exception"):
+        out += f" · {c['pass_with_exception']} con excepción"
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Emit
 # --------------------------------------------------------------------------- #
@@ -154,13 +203,17 @@ def _articles_by_family(spec: dict) -> dict:
 
 
 def build_pack(controls: list[dict], posture: dict, spec: dict, out_dir: str,
-               provider: str = "", account: str = "", control_meta: dict | None = None) -> dict:
+               provider: str = "", account: str = "", control_meta: dict | None = None,
+               resource_counts: dict | None = None) -> dict:
     """Clasifica los controles, cruza con el posture (PASS/FAIL) y emite el pack read-only.
     `control_meta` = {cid: {remediation, rationale, references}} de la metadata de control (ya
     HTML->texto) para las columnas accionables de mapping.csv/fails.csv; vacío = columnas en blanco
-    (fail-soft). Devuelve stats. NO muta nada; el cliente aplica por UI (human-gate)."""
+    (fail-soft). `resource_counts` = salida de parse_resource_counts() -> columnas de ALCANCE
+    (cuántos recursos fallan de cuántos), que permiten priorizar entre FAILs sin llamadas extra.
+    Devuelve stats. NO muta nada; el cliente aplica por UI (human-gate)."""
     os.makedirs(out_dir, exist_ok=True)
     control_meta = control_meta or {}
+    resource_counts = resource_counts or {}
     arts = _articles_by_family(spec)
     fam_order = [f["id"] for f in spec.get("families", [])]
 
@@ -177,12 +230,19 @@ def build_pack(controls: list[dict], posture: dict, spec: dict, out_dir: str,
         if route in ("default", "unmatched"):
             gaps.append({**c, "family": fid or "", "route": route})
         cm = control_meta.get(c["cid"], {})
+        rc = resource_counts.get(c["cid"], {})
         rows.append({
             "cid": c["cid"], "control_name": c["name"], "criticality": c.get("criticality", ""),
             "service": c.get("service", ""), "benchmark": c.get("benchmark", ""),
             "family": fid or "", "route": route,
             "law_articles": "; ".join(arts.get(fid, [])) if fid else "",
             "posture": result,
+            "failed_resources": "" if rc.get("failed") is None else rc["failed"],
+            "passed_resources": "" if rc.get("passed") is None else rc["passed"],
+            "pass_with_exception_resources": (
+                "" if rc.get("pass_with_exception") is None else rc["pass_with_exception"]),
+            "total_resources": rc.get("total", ""),
+            "resource_summary": _resource_summary(rc),
             "remediation": cm.get("remediation", ""), "rationale": cm.get("rationale", ""),
             "references": cm.get("references", ""),
             "provider": provider, "account": account,
@@ -190,7 +250,10 @@ def build_pack(controls: list[dict], posture: dict, spec: dict, out_dir: str,
 
     # mapping.csv
     cols = ["cid", "control_name", "criticality", "service", "benchmark", "family",
-            "route", "law_articles", "posture", "remediation", "rationale", "references",
+            "route", "law_articles", "posture",
+            "failed_resources", "passed_resources", "pass_with_exception_resources",
+            "total_resources", "resource_summary",
+            "remediation", "rationale", "references",
             "provider", "account"]
     with open(os.path.join(out_dir, "mapping.csv"), "w", encoding="utf-8", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
@@ -436,6 +499,14 @@ Scope leído: provider=`{provider or '(varios)'}`  account/connector=`{account o
 
 1. **Revisar** `mapping.csv` (control CSPM → familia legal → artículos → PASS/FAIL) y `fails.csv`
    (los FAIL, input a remediación) y `gaps.md` (controles a revisar).
+   Para **priorizar** entre los FAIL, ordena por `failed_resources`: la columna `resource_summary`
+   dice el alcance real de cada uno (p.ej. `1 de 20 recursos` vs `169 de 169 recursos`) — no es lo
+   mismo un control que falla en un recurso puntual que uno que falla en toda la flota. Los conteos
+   vienen de las propias evaluations (sin llamadas extra). Ojo: dan el **alcance**, NO la identidad
+   del recurso; para saber *cuál* recurso es, ve al punto 3 (reporte con `resourceSummaryInclude`),
+   a la consola del proveedor, o a su CLI. En AWS/GCP además hay
+   `GET /{{provider}}/evaluations/{{cuenta}}/resources/{{controlId}}` (read-only); **OCI no lo
+   expone** (404).
 2. **Crear la Custom Policy en la UI** (no por API por defecto): `Policy > New`, elegir provider/
    executionType, asociar los controles del mapping, y asignar connectors/tags (el scope lo pone
    el cliente). Ref. DESIGN-cloud-posture.md §4.

@@ -27,7 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cloud_pack.generator import (  # noqa: E402
-    _html_to_text, build_pack, load_spec, parse_controls, parse_evaluations)
+    _html_to_text, build_pack, load_spec, parse_controls, parse_evaluations,
+    parse_resource_counts)
 from scripts._runtime import (  # noqa: E402
     resolve_run_dir, preflight_writable, link_latest, setup_run_log)
 
@@ -195,6 +196,7 @@ def _run_one(client, spec, provider, account, out_base, log=None, control_meta=N
     items, http_status = _fetch_all_evaluations(client, provider, account)
     controls = parse_controls(items)
     posture = parse_evaluations(items)
+    res_counts = parse_resource_counts(items)
     state, why = _diagnose_posture(http_status, controls, posture)
     DIAG = {"auth": "🔐 AUTH/PERMISO", "empty": "∅ SIN EVALUATIONS",
             "not_evaluated": "⏳ NOT_EVALUATED (Run Connector)", "ok": "✓ OK"}
@@ -210,7 +212,7 @@ def _run_one(client, spec, provider, account, out_base, log=None, control_meta=N
             log.info(f"{provider}/{account} run_connector_hint :: {hint.strip()}")
     out_dir = str(Path(out_base) / provider / (account or "default"))
     stats = build_pack(controls, posture, spec, out_dir, provider=provider, account=account,
-                       control_meta=control_meta)
+                       control_meta=control_meta, resource_counts=res_counts)
     print(f"  [{provider}/{account}] {stats['controls']} ctrl · {stats['evaluated']} eval · "
           f"{stats['fails']} FAIL · {stats['gaps']} a revisar · {stats['by_family']}", flush=True)
     return {"provider": provider, "account": account, "out_dir": out_dir,
@@ -249,10 +251,12 @@ def main(argv=None) -> int:
         # como en live: si no hay 'controls' explícitos, se derivan de las evaluations.
         controls = parse_controls(blob.get("controls") or evals)
         posture = parse_evaluations(evals)
+        res_counts = parse_resource_counts(evals)
         prov = args.provider if args.provider != "all" else "aws"
         acct = args.account or "fixture"
         out_dir = str(Path(out_base) / prov / acct)
-        stats = build_pack(controls, posture, spec, out_dir, provider=prov, account=acct)
+        stats = build_pack(controls, posture, spec, out_dir, provider=prov, account=acct,
+                           resource_counts=res_counts)
         link_latest(run_dir)
         log.info(f"fixture done controls={stats['controls']} fails={stats['fails']} out={out_dir}")
         print(f"[fixture] {stats['controls']} ctrl · {stats['fails']} FAIL -> {out_dir}/")
