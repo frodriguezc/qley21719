@@ -23,10 +23,13 @@ token; NO muta el tenant); todos los datos son GET allow-list-only. El password 
 > anterior —Basic contra `qualysguard.qg3`— daba 401 contra un tenant real; el "200" histórico era un
 > artefacto y se corrigió.) `controls/metadata/list` puede dar 401 aun con JWT válido si el API user NO
 > tiene el permiso de control-library de CloudView (es otro permiso): con el permiso/rol correcto da 200.
-> OCI VERIFICADO LIVE US03 (2026-08, tenant con OCI onboardeado): el discovery corrio por
-> `connectors/v1.0/OCI/list` (3.0) -> tenancy descubierta, y `/oci/evaluations/?tenantId=<ocid>` -> 200
-> con 82/82 controles (mismo envelope `content` que AWS). El `/oci/connectors` de v1 NO se ejercito en
-> esa corrida (el pack no lo usa): sigue defensivo en la allow-list.
+> OCI VERIFICADO LIVE US03 desde 2026-06-27 (tenant con OCI onboardeado, corridas de
+> `cloud_posture_pack.py`): el discovery corre por `connectors/v1.0/OCI/list` (3.0) -> tenancy
+> descubierta, y `/oci/evaluations/?tenantId=<ocid>` -> 200 (mismo envelope `content` que AWS).
+> 78/78 controles el 2026-06-27; RE-CONFIRMADO el 2026-08-12 con 82/82 (la libreria CIS OCI sumo 4
+> controles entre ambas fechas). OJO: el `verify_tenant.py` del 2026-06-25 corrio contra un tenant
+> con connectors AWS+GCP solamente -> de ahi salio el "OCI no ejercitado" que quedo obsoleto dos
+> dias despues. El `/oci/connectors` de v1 NO se ejercito (el pack no lo usa): sigue defensivo.
 > Residual: los REPORTES OCI (`create_report` con `cloudType=OCI`) siguen sin ejercer (POST, human-gate).
 
 Endpoints verificados vs la coleccion Postman v1.23.0.0 + la guia TotalCloud/CloudView API
