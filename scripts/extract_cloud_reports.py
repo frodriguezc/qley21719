@@ -216,11 +216,19 @@ def _assessment_body(name: str, cloud_type: str, policy_ids: list[str],
 
 def _mandate_body(name: str, cloud_type: str, mandate_id: str, policy_ids: list[str],
                   connector_ids: list[str], fmt: str = "PDF") -> dict:
+    """Body de `POST /reports?executionType=RUN_TIME` (mandate). Contrato verificado live
+    contra OCI el 2026-08-12:
+      - `type` = **MANDATE**. 'MANDATE_BASED' NO existe: da 422 con la lista de ids válidos
+        (`known type ids = [CreateReportRequest, MANDATE, POLICY]`).
+      - `executionType` NO va acá: es query param (ver `_run_mandate`).
+      - El PDF va con UNA sola policy (misma restricción que el assessment PDF), así que se
+        toma la primera; el resto queda fuera a propósito.
+    """
     return {
         "cloudType": cloud_type,
-        "type": "MANDATE_BASED",
+        "type": "MANDATE",
         "mandateId": mandate_id,
-        "policies": [{"cloudType": cloud_type, "policyId": pid} for pid in policy_ids],
+        "policies": [{"cloudType": cloud_type, "policyId": pid} for pid in policy_ids[:1]],
         "connectorIds": connector_ids,
         "format": fmt.upper(),
         "title": sanitize_report_name(name),          # mismo charset restringido que reportName
@@ -320,11 +328,15 @@ def _run_assessment(client, body: dict, out_dir: Path, label: str, fmt: str,
 
 
 def _run_mandate(client, body: dict, label: str, log) -> dict:
-    code, text = client.post("/reports", body)
+    # `executionType` va como QUERY PARAM, no en el body: mandarlo en el body da 400 "Required
+    # request parameter 'executionType' ... is not present" (es un @RequestParam de Spring).
+    # VERIFICADO live 2026-08-12. Único valor válido probado: RUN_TIME (ON_DEMAND -> 400
+    # "Failed to convert 'executionType'"). Devuelve 201 (no 200) con JSON.
+    code, text = client.post("/reports?executionType=RUN_TIME", body)
     if not (200 <= code < 300):
         log.info(f"{label} mandate create FAILED http={code} :: {text[:200]}")
         return {"ok": False, "stage": "create", "http": code, "detail": text[:300]}
-    rid = _first(json.loads(text) if text.strip().startswith("{") else {}, _REPORT_ID_KEYS)
+    rid = _parse_report_id(text)
     log.info(f"{label} mandate creado reportId={rid or '(s/id)'} — el download del Mandate NO tiene "
              f"API en ningún provider (audit: /reports/* no expone descarga): baja el PDF de la "
              f"consola → TotalCloud → Reports → buscar por título/reportId → estado Completed → Download")

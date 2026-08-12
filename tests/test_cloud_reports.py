@@ -52,7 +52,9 @@ class FakeClient:
     def post(self, subpath, body):
         self.mutations += 1
         self.posted.append((subpath, body))
-        if subpath == "/reports":
+        # enruta por PATH, ignorando la query string: el mandate va a
+        # /reports?executionType=RUN_TIME (executionType es @RequestParam, no campo del body).
+        if subpath.split("?", 1)[0] == "/reports":
             return self._mandate_create
         return self._create
 
@@ -174,8 +176,36 @@ def test_parse_report_id_acepta_uuid_pelado():
 
 def test_mandate_body_shape():
     b = ecr._mandate_body("Ley afín", "OCI", "M-ISO", ["P1"], ["C-OCI"])
-    assert b["type"] == "MANDATE_BASED" and b["mandateId"] == "M-ISO" and b["format"] == "PDF"
+    assert b["type"] == "MANDATE" and b["mandateId"] == "M-ISO" and b["format"] == "PDF"
     assert b["policies"] == [{"cloudType": "OCI", "policyId": "P1"}]
+
+
+def test_mandate_type_es_MANDATE_no_MANDATE_BASED():
+    """'MANDATE_BASED' no existe: 422 con `known type ids = [CreateReportRequest, MANDATE, POLICY]`
+    (verificado live 2026-08-12)."""
+    b = ecr._mandate_body("Ley", "OCI", "M-ISO", ["P1"], ["C"])
+    assert b["type"] == "MANDATE"
+
+
+def test_mandate_pdf_usa_una_sola_policy():
+    """El PDF admite UNA policy (misma restricción que el assessment PDF): se toma la primera."""
+    b = ecr._mandate_body("Ley", "OCI", "M-ISO", ["P1", "P2", "P3"], ["C"])
+    assert b["policies"] == [{"cloudType": "OCI", "policyId": "P1"}]
+
+
+def test_mandate_manda_executionType_como_query_param():
+    """`executionType` es @RequestParam: en el body da 400 'Required request parameter
+    executionType ... is not present'. Tiene que ir en la query string."""
+    import logging
+    log = logging.getLogger("test-mandate")
+    log.addHandler(logging.NullHandler())
+    fake = FakeClient(mandate_create=(201, '{"reportId":"M-1"}'))
+    r = ecr._run_mandate(fake, ecr._mandate_body("Ley", "OCI", "M-ISO", ["P1"], ["C"]),
+                         "oci/x", log)
+    assert r["ok"] is True and r["report_id"] == "M-1"
+    path = fake.posted[0][0]
+    assert "executionType=RUN_TIME" in path, f"executionType debe ir en la query: {path!r}"
+    assert "executionType" not in fake.posted[0][1], "y NO en el body"
 
 
 def test_status_of_variantes():
