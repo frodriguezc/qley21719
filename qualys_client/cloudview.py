@@ -23,7 +23,11 @@ token; NO muta el tenant); todos los datos son GET allow-list-only. El password 
 > anterior —Basic contra `qualysguard.qg3`— daba 401 contra un tenant real; el "200" histórico era un
 > artefacto y se corrigió.) `controls/metadata/list` puede dar 401 aun con JWT válido si el API user NO
 > tiene el permiso de control-library de CloudView (es otro permiso): con el permiso/rol correcto da 200.
-> Residual: OCI no se ejerció live (eval/reportes a confirmar en un tenant con OCI onboardeado).
+> OCI VERIFICADO LIVE US03 (2026-08, tenant con OCI onboardeado): el discovery corrio por
+> `connectors/v1.0/OCI/list` (3.0) -> tenancy descubierta, y `/oci/evaluations/?tenantId=<ocid>` -> 200
+> con 82/82 controles (mismo envelope `content` que AWS). El `/oci/connectors` de v1 NO se ejercito en
+> esa corrida (el pack no lo usa): sigue defensivo en la allow-list.
+> Residual: los REPORTES OCI (`create_report` con `cloudType=OCI`) siguen sin ejercer (POST, human-gate).
 
 Endpoints verificados vs la coleccion Postman v1.23.0.0 + la guia TotalCloud/CloudView API
 vigente (docs.qualys.com/en/tc/api, jun-2026); ver mapping/platform_coverage.yaml `cspm_api`.
