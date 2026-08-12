@@ -4,6 +4,7 @@ flujo create/poll/download + el human-gate (DRY-RUN no hace POST; --run sí). Si
 FakeClient que devuelve (code, text). Corre standalone (como en CI) y bajo pytest.
 """
 import json
+import re
 import os
 import sys
 import tempfile
@@ -106,9 +107,69 @@ def test_pick_mandate_sin_match():
 
 def test_assessment_body_shape():
     b = ecr._assessment_body("Ley", "OCI", ["P1", "P2"], ["C-OCI"], ["FAIL"], "csv")
-    assert b["cloudType"] == "OCI" and b["format"] == "CSV" and b["policyIds"] == ["P1", "P2"]
+    assert b["cloudType"] == "OCI" and b["policyIds"] == ["P1", "P2"]
     assert b["connectorIds"] == ["C-OCI"] and b["resourceResults"] == ["FAIL"]
     assert b["executionType"] == "RUN_TIME" and b["resourceSummaryInclude"] is True
+
+
+def test_assessment_format_es_case_sensitive():
+    """'CSV' en mayúscula -> 400 'Parameter format has invalid value' (verificado live 2026-08-12).
+    El .upper() previo hacía que el CSV NUNCA se pudiera crear."""
+    b = ecr._assessment_body("Ley", "OCI", ["P1"], ["C"], ["FAIL"], "csv")
+    assert b["format"] == "csv", "csv va en MINÚSCULA"
+    b2 = ecr._assessment_body("Ley", "OCI", ["P1"], ["C"], ["FAIL"], "PDF")
+    assert b2["format"] == "PDF", "pdf sí va en mayúscula"
+
+
+def test_assessment_body_incluye_obligatorios_no_documentados():
+    """startDate/endDate (ISO-8601 con Z) y query son obligatorios de facto: sin ellos la API
+    responde 400, o 500 con NPE en el caso de query."""
+    b = ecr._assessment_body("Ley", "OCI", ["P1"], ["C"], ["FAIL"], "csv")
+    assert "query" in b, "query es obligatorio (NPE 500 si falta)"
+    for k in ("startDate", "endDate"):
+        assert k in b, f"{k} es obligatorio"
+        assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", b[k]), \
+            f"{k}={b[k]!r} no es ISO-8601 con Z (los demás formatos dan 400)"
+
+
+def test_sanitize_report_name_saca_el_punto():
+    """Qualys rechaza el reportName con cualquier char fuera de alfanumérico y _-'() (422).
+    El punto de 'Ley 21.719' hacía fallar SIEMPRE el nombre por defecto del pack."""
+    assert ecr.sanitize_report_name("Ley 21.719 - Sinacofi") == "Ley 21719 - Sinacofi"
+    assert ecr.sanitize_report_name("a/b:c*d") == "abcd"
+    assert ecr.sanitize_report_name("O'Higgins (prod)") == "O'Higgins (prod)"
+    assert ecr.sanitize_report_name("...") == "Reporte"          # no deja el nombre vacío
+
+
+def test_assessment_body_sanitiza_el_nombre():
+    b = ecr._assessment_body("Ley 21.719 - Sinacofi", "OCI", ["P1"], ["C"], ["FAIL"], "csv")
+    assert "." not in b["reportName"] and b["reportName"] == "Ley 21719 - Sinacofi"
+
+
+def test_first_uuid_prefiere_el_uuid_sobre_el_id_numerico():
+    """connectorIds deserializa como java.util.UUID: el id numérico da 400 (verificado live).
+    La Connector Mgmt 3.0 devuelve AMBOS, así que se elige por forma."""
+    item = {"connectorId": "1789081", "id": 1789081,
+            "connectorUuid": "de91d5d6-7f4b-400c-bd70-def653fc8c25",
+            "uuid": "de91d5d6-7f4b-400c-bd70-def653fc8c25"}
+    got = ecr._first_uuid(item, ecr._CONNECTOR_ID_KEYS)
+    assert got == "de91d5d6-7f4b-400c-bd70-def653fc8c25"
+    # si el provider ya trae el UUID en connectorId, sirve igual
+    assert ecr._first_uuid({"connectorId": "de91d5d6-7f4b-400c-bd70-def653fc8c25"},
+                           ecr._CONNECTOR_ID_KEYS) == "de91d5d6-7f4b-400c-bd70-def653fc8c25"
+    # sin ningún UUID -> fallback al orden normal (mejor mandar algo y ver el error real)
+    assert ecr._first_uuid({"connectorId": "1789081"}, ecr._CONNECTOR_ID_KEYS) == "1789081"
+
+
+def test_parse_report_id_acepta_uuid_pelado():
+    """`create` devuelve el UUID PELADO, no JSON. Asumir JSON perdía el reportId en silencio:
+    el reporte quedaba creado en el tenant y la corrida lo daba por fallido."""
+    assert ecr._parse_report_id("b42c0530-9606-11f1-a3b5-57fd45169430") == \
+        "b42c0530-9606-11f1-a3b5-57fd45169430"
+    assert ecr._parse_report_id('"b42c0530-9606-11f1-a3b5-57fd45169430"') == \
+        "b42c0530-9606-11f1-a3b5-57fd45169430"
+    assert ecr._parse_report_id('{"reportId":"X-1"}') == "X-1"    # mandate sí devuelve JSON
+    assert ecr._parse_report_id("") is None
 
 
 def test_mandate_body_shape():
@@ -121,6 +182,14 @@ def test_status_of_variantes():
     assert ecr._status_of('{"status":"Completed"}') == "completed"
     assert ecr._status_of('{"content":[{"status":"Processing"}]}') == "processing"
     assert ecr._status_of("no-json") == ""
+
+
+def test_status_of_lee_la_envoltura_data():
+    """assessment/list envuelve en `data`, NO en el `content` de Spring. Leer solo `content`
+    devolvía "" para siempre y el poll moría por timeout con el reporte YA Completed."""
+    assert ecr._status_of('{"data":[{"status":"ACCEPTED"}],"count":1}') == "accepted"
+    assert ecr._status_of('{"data":[{"status":"COMPLETED"}],"count":1}') == "completed"
+    assert ecr._status_of('{"data":[],"count":0}') == ""
 
 
 # ------------------------------------------------------- flujo create/poll/download

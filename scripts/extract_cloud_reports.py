@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -82,6 +83,26 @@ def _first(d: dict, keys) -> str | None:
     return None
 
 
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                      r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _first_uuid(d: dict, keys) -> str | None:
+    """Como `_first`, pero PRIORIZA el valor con forma de UUID (36 chars).
+
+    `report/assessment/create` deserializa `connectorIds` como `java.util.UUID`: pasarle el id
+    NUMÉRICO del connector da HTTP 400 ('UUID has to be represented by standard 36-char
+    representation') — VERIFICADO live contra OCI 2026-08-12. La Connector Management API 3.0
+    devuelve AMBOS (`id`/`connectorId` numéricos y `uuid`/`connectorUuid`), así que se elige por
+    FORMA y no por nombre de campo: sirve igual si otro provider ya trae el UUID en `connectorId`.
+    Fallback al orden normal si ninguno matchea (mejor mandar algo que None y ver el error real)."""
+    for k in keys:
+        v = d.get(k)
+        if v and _UUID_RE.match(str(v)):
+            return str(v)
+    return _first(d, keys)
+
+
 def _items(text: str) -> list:
     """Extrae la lista de items de una respuesta JSON Spring (content[]) o lista plana."""
     try:
@@ -102,7 +123,7 @@ def _extract_connectors(provider: str, text: str) -> list[dict]:
         if not isinstance(it, dict):
             continue
         acct = _first(it, _ACCOUNT_KEYS.get(provider, ()))
-        cid = _first(it, _CONNECTOR_ID_KEYS)
+        cid = _first_uuid(it, _CONNECTOR_ID_KEYS)      # el create exige UUID, no el id numérico
         if acct and cid:
             out.append({"account": acct, "connector_id": cid,
                         "name": it.get("name") or it.get("connectorName") or ""})
@@ -142,17 +163,54 @@ def _pick_mandate(text: str, hint: str | None) -> dict | None:
     return None
 
 
+# El reportName rechaza todo lo que no sea alfanumérico, espacio o _-'() — VERIFICADO live
+# (422 "Invalid report name"). El punto de "Ley 21.719" lo hacía fallar SIEMPRE.
+_NAME_OK = re.compile(r"[^0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ _\-'()]")
+
+
+def sanitize_report_name(name: str) -> str:
+    """Nombre aceptable para Qualys: quita los chars prohibidos y colapsa espacios.
+    'Ley 21.719 - Sinacofi' -> 'Ley 21719 - Sinacofi' (el punto se cae, no se reemplaza:
+    '21719' se lee mejor que '21 719')."""
+    return re.sub(r"\s{2,}", " ", _NAME_OK.sub("", name or "")).strip() or "Reporte"
+
+
+def _iso_z(dt) -> str:
+    """ISO-8601 con Z — el ÚNICO formato que acepta startDate/endDate (verificado live:
+    '2026-08-01' y epoch-ms dan 400 'Parameter startDate has invalid value')."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _assessment_body(name: str, cloud_type: str, policy_ids: list[str],
-                     connector_ids: list[str], results: list[str], fmt: str) -> dict:
+                     connector_ids: list[str], results: list[str], fmt: str,
+                     window_days: int = 30, now=None) -> dict:
+    """Body de report/assessment/create.
+
+    Ajustado al contrato REAL de la API (verificado live contra OCI, 2026-08-12; la guía tc/api
+    no documenta ni las obligatoriedades ni el case):
+      - `format` es CASE-SENSITIVE: 'csv' en minúscula ('CSV' -> 400 "Parameter format has
+        invalid value"). 'PDF' sí va en mayúscula, y además exige UNA sola policy.
+      - `startDate`/`endDate` son OBLIGATORIOS y en ISO-8601 con Z (la doc los da opcionales).
+      - `query` es OBLIGATORIO aunque la doc lo marque opcional: omitirlo revienta el servidor
+        con un NPE 500 (`query.contains()` sin null-check). Vacío ('') es válido y no filtra.
+      - `connectorIds` son UUID, no el id numérico (ver `_first_uuid`).
+    """
+    from datetime import datetime, timedelta, timezone
+    now = now or datetime.now(timezone.utc)
+    fmt_l = (fmt or "csv").lower()
     return {
-        "reportName": name,
-        "format": fmt.upper(),
+        "reportName": sanitize_report_name(name),
+        # 'csv' en minúscula; PDF en mayúscula. No usar .upper() ciego: rompe el CSV.
+        "format": "PDF" if fmt_l == "pdf" else "csv",
         "cloudType": cloud_type,
         "executionType": "RUN_TIME",
         "policyIds": policy_ids,
         "connectorIds": connector_ids,
         "resourceResults": [r.upper() for r in results],
         "resourceSummaryInclude": True,
+        "startDate": _iso_z(now - timedelta(days=window_days)),
+        "endDate": _iso_z(now),
+        "query": "",                                   # obligatorio de facto; vacío = sin filtro
     }
 
 
@@ -165,18 +223,23 @@ def _mandate_body(name: str, cloud_type: str, mandate_id: str, policy_ids: list[
         "policies": [{"cloudType": cloud_type, "policyId": pid} for pid in policy_ids],
         "connectorIds": connector_ids,
         "format": fmt.upper(),
-        "title": name,
+        "title": sanitize_report_name(name),          # mismo charset restringido que reportName
     }
 
 
 def _status_of(text: str) -> str:
-    """status (lowercase) de una respuesta de assessment/list."""
+    """status (lowercase) de una respuesta de assessment/list.
+
+    `report/assessment/list` envuelve los items en **`data`** (`{"data":[...],"count":N}`), NO en
+    el `content` de Spring que usan controls/evaluations — VERIFICADO live 2026-08-12. Buscar solo
+    `content` devolvía "" para siempre: el poll no terminaba nunca y moría por timeout aunque el
+    reporte YA estuviera Completed. Se aceptan las dos envolturas."""
     try:
         obj = json.loads(text)
     except (ValueError, TypeError):
         return ""
     if isinstance(obj, dict):
-        for it in (obj.get("content") or [obj]):
+        for it in (obj.get("data") or obj.get("content") or [obj]):
             if isinstance(it, dict) and it.get("status"):
                 return str(it["status"]).strip().lower()
     if isinstance(obj, list) and obj and isinstance(obj[0], dict):
@@ -206,14 +269,33 @@ def _discover(client, provider: str) -> tuple[list[dict], str]:
 # Ejecución de un reporte (poll + download) — solo bajo --run
 # --------------------------------------------------------------------------------------
 
+def _parse_report_id(text: str) -> str | None:
+    """reportId de la respuesta de `create`.
+
+    OJO: `report/assessment/create` devuelve el UUID **pelado** (`b42c0530-9606-...`), NO un JSON
+    — VERIFICADO live 2026-08-12. Antes se asumía `{...}` y el reportId se perdía en silencio:
+    el reporte SÍ quedaba creado en el tenant pero la corrida lo daba por fallido. `/reports`
+    (mandate) sí devuelve JSON, así que se soportan las dos formas."""
+    t = (text or "").strip().strip('"')
+    if _UUID_RE.match(t):
+        return t
+    if t.startswith("{"):
+        try:
+            return _first(json.loads(t), _REPORT_ID_KEYS)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 def _run_assessment(client, body: dict, out_dir: Path, label: str, fmt: str,
                     poll_interval: int, poll_timeout: int, log, sleep=time.sleep) -> dict:
     code, text = client.post("/report/assessment/create", body)
     if not (200 <= code < 300):
         log.info(f"{label} assessment create FAILED http={code} :: {text[:200]}")
         return {"ok": False, "stage": "create", "http": code, "detail": text[:300]}
-    rid = _first(json.loads(text) if text.strip().startswith("{") else {}, _REPORT_ID_KEYS)
+    rid = _parse_report_id(text)
     if not rid:
+        log.info(f"{label} assessment create OK http={code} pero SIN reportId :: {text[:200]}")
         return {"ok": False, "stage": "create", "http": code, "detail": "sin reportId en la respuesta"}
     log.info(f"{label} assessment reportId={rid} -> polling")
     waited = 0
