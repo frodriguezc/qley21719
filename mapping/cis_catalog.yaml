@@ -191,54 +191,93 @@ targets:
     title_match: ['solaris']
 
   # ---------------- Bases de datos (best-effort -> verificar) ----------------
+  # SERVIDOR vs CLIENTE (calibrado contra el inventario CSAM real de un tenant, 2026-10):
+  #   software_match   = evidencia del MOTOR (lo único que dispara [B]).
+  #   software_exclude = veto: cliente/driver/herramienta/paquete de preparación que también matchea.
+  #   software_client  = solo-cliente: NO recomienda el benchmark; se informa en [C] como contexto.
+  # Un benchmark de DB evalúa la INSTANCIA (vía authentication record de DB), así que recomendarlo
+  # por un psql, un instantclient o un ODBC driver manda al DBA a buscar bases que no existen.
+  # Ojo con los nombres RPM vs CSAM: en RHEL/OL el paquete `postgresql`/`mysql`/`mariadb` a secas es
+  # el CLIENTE (el server es `-server`); CSAM además normaliza el motor como "PostgreSQL Database
+  # 16.15" / "Oracle 19 19.0.0.0.0", que sí es evidencia de servidor.
   - key: mssql
     group: "Bases de datos"
     kind: db
     benchmark: "CIS Microsoft SQL Server Benchmark (versión = la de la flota)"
     pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
-    software_match: ['sql server', 'mssql']
+    # \b evita el cruce con "mySQL Server 8.4" (antes 'sql server' lo tomaba como SQL Server).
+    software_match: ['\bmicrosoft sql server\b', '\bsql server 20\d\d\b', '^mssql (20\d\d|server)\b',
+                     '\bfor sql server 20\d\d\b', '\bpara sql server 20\d\d\b']
+    software_exclude: ['odbc driver', 'ole db driver', 'command line utilities', 'management studio',
+                       'mssql-tools', 'native client', '\bjdbc\b', '\bmysql\b']
+    software_client: ['odbc driver \d+ for sql server', 'ole db driver', 'command line utilities',
+                      'management studio', 'mssql-tools']
     title_match: ['sql server']
   - key: oracle_db
     group: "Bases de datos"
     kind: db
     benchmark: "CIS Oracle Database Benchmark (19c/RDBMS + On Host OS)"
     pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
-    software_match: ['oracle database', 'oracle.*\d+c\b']
+    # CSAM normaliza el motor como "oracle 19 19.0.0.0.0"; el RPM de servidor es oracle-database-ee/-free.
+    # El 'oracle-database-preinstall-19c' solo PREPARA el SO: antes disparaba [B] sin haber base.
+    software_match: ['^oracle \d{2}\s+\d', '\boracle database \d', '\boracle database (enterprise|standard|express)',
+                     '^oracle-database-(ee|se2?|xe|free)\b']
+    software_exclude: ['preinstall', 'instantclient', '\bclient\b', 'odbc', 'jdbc']
+    software_client: ['instantclient', '^oracle client\b', 'oracle-database-preinstall']
     title_match: ['oracle database']
   - key: postgres
     group: "Bases de datos"
     kind: db
     benchmark: "CIS PostgreSQL Benchmark (versión = la de la flota)"
     pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
-    software_match: ['postgre']
+    # Server: "PostgreSQL Database NN" (CSAM), postgresqlNN-server / postgresql-server (RPM), y el
+    # instalador EDB de Windows ("postgresql 16 16.4-1": mayor, ESPACIO, versión). El RPM
+    # "postgresql 10.23-..." (sin espacio tras el mayor) y postgresqlNN / -libs / -odbc son CLIENTE.
+    software_match: ['\bpostgresql database \d', '^postgresql\d*-server\b', '^postgres(ql)? server\b',
+                     '^postgresql \d+ \d']
+    software_exclude: ['-libs\b', '-odbc\b', '\bjdbc\b', '-devel\b', 'pgadmin']
+    software_client: ['^postgresql\d*(-libs|-odbc|-contrib)?\s', '^postgresql \d+\.\d', 'pgadmin']
     title_match: ['postgresql']
   - key: mysql
     group: "Bases de datos"
     kind: db
     benchmark: "CIS Oracle MySQL Community/Enterprise Benchmark"
     pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
-    software_match: ['mysql']
+    software_match: ['\bmysql server\b', '^mysql-(community-|commercial-)?server\b', '\bmysqld\b']
+    software_exclude: ['workbench', 'documents', 'examples', 'installer', 'connector', 'router',
+                       'shell', '-release\b', '-libs\b', '-common\b', '-devel\b']
+    software_client: ['workbench', '^mysql \d', 'connector', '^mysql-shell', '^mysql-(community-)?client']
     title_match: ['mysql']
   - key: mariadb
     group: "Bases de datos"
     kind: db
     benchmark: "CIS MariaDB Benchmark"
     pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
-    software_match: ['mariadb']
+    # mariadb-connector-c es una librería cliente: antes recomendaba el benchmark sin haber motor.
+    software_match: ['^mariadb[- ]server\b', '^mariadb \d+\.\d+ \(x(64|86)\)']
+    software_exclude: ['connector', '-libs\b', '-common\b', '-devel\b']
+    software_client: ['mariadb-connector', '^mariadb \d+\.\d+[^ ]', '^mariadb-client\b']
     title_match: ['mariadb']
   - key: mongodb
     group: "Bases de datos"
     kind: db
     benchmark: "CIS MongoDB Benchmark"
     pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
-    software_match: ['mongo']
+    # MongoDB Compass es la GUI de escritorio: antes recomendaba el benchmark sin haber motor.
+    software_match: ['^mongodb-(org|enterprise)(-server|-mongod)?\b', '^mongodb \d', '\bmongod\b']
+    software_exclude: ['compass', 'mongosh', '-shell\b', 'database tools', '-tools\b']
+    # anclados a mongo: un '-shell' suelto atrapaba gnome-shell / chrome-gnome-shell.
+    software_client: ['mongodb compass', '^mongosh\b', '^mongodb-mongosh\b', 'mongodb database tools',
+                      '^mongodb-org-(shell|tools)\b']
     title_match: ['mongodb']
   - key: db2
     group: "Bases de datos"
     kind: db
     benchmark: "CIS IBM Db2 Benchmark"
     pillars: [acceso, cifrado, auditoria, hardening, disponibilidad]
-    software_match: ['db2']
+    software_match: ['\bdb2\b']
+    software_exclude: ['data server (runtime )?client', 'runtime client', 'odbc', 'jdbc', 'driver']
+    software_client: ['data server (runtime )?client', 'runtime client', 'db2 .*driver']
     title_match: ['db2']
 
   # ---------------- Web / app servers y middleware ----------------

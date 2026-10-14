@@ -246,9 +246,18 @@ def reconcile(catalog: dict, os_auth: Counter, os_unauth: Counter, software: set
         fleet_auth = sum(n for osx, n in os_auth.items() if _any(tg.get("os_match"), osx))
         # ¿visto solo en hosts SIN autenticar? (fingerprint ambiguo -> [A'] "confirmar")
         fleet_unauth = sum(n for osx, n in os_unauth.items() if _any(tg.get("os_match"), osx))
-        # software que matchea (evidencia para [B]; no contra un blob unido -> evita cruces falsos)
-        sw_matches = sorted(s for s in software if _any(tg.get("software_match"), s))
+        # software que matchea (evidencia para [B]; no contra un blob unido -> evita cruces falsos).
+        # SERVIDOR vs CLIENTE: un DB benchmark solo aplica donde corre el MOTOR. `software_match` es
+        # evidencia de servidor; `software_exclude` veta hits que en realidad son cliente/driver/prep
+        # (p.ej. oracle-database-preinstall, instantclient, postgresqlNN-libs, ODBC drivers). Lo que
+        # solo matchea `software_client` NO dispara [B]: se informa en [C] como "solo clientes vistos"
+        # (verificado contra un tenant real 2026-10: antes, libs/clients recomendaban el benchmark).
+        excl = tg.get("software_exclude")
+        sw_matches = sorted(s for s in software
+                            if _any(tg.get("software_match"), s) and not _any(excl, s))
         sw_hit = bool(sw_matches)
+        sw_clients = [] if sw_hit else sorted(
+            s for s in software if _any(tg.get("software_client"), s))
         present_in_fleet = fleet_auth > 0 or sw_hit
         # ¿ya importado? (match de title contra las policies del tenant)
         imported_ids = [pid for pid, ti in policies if _any(tg.get("title_match"), ti)]
@@ -273,7 +282,7 @@ def reconcile(catalog: dict, os_auth: Counter, os_unauth: Counter, software: set
             "benchmark": tg["benchmark"], "benchmark_versioned": tg.get("benchmark_versioned"),
             "versioned": versioned, "pillars": tg.get("pillars", []),
             "fleet_hosts": fleet_auth, "fleet_hosts_unauth": fleet_unauth,
-            "sw_hit": sw_hit, "sw_matches": sw_matches,
+            "sw_hit": sw_hit, "sw_matches": sw_matches, "sw_clients": sw_clients,
             "present_in_fleet": present_in_fleet,
             "imported_ids": imported_ids, "imported": bool(imported_ids),
             "versions_auth": versions_auth, "versions_auth_nover": nover_auth,
@@ -453,7 +462,9 @@ def _write_faltantes(path: Path, catalog: dict, rec: dict, fleet: dict,
     L += ["", "[C] DB / middleware / infra — VERIFICAR manualmente si corren en la flota:",
           "    (Qualys no siempre fingerprintea el motor sin CSAM/auth scan -> confirmar con el DBA/infra)"]
     for r in verify_only:
-        L.append(f"  - {r['benchmark']}   ({r['group']})")
+        cl = r.get("sw_clients") or []
+        cl_str = ("  — solo CLIENTES vistos (no es el motor): " + _sw_evidence(cl)) if cl else ""
+        L.append(f"  - {r['benchmark']}   ({r['group']}){cl_str}")
 
     L += ["", "-" * 72, "Fuera del alcance de Policy Compliance (van por OTRO motor de Qualys):"]
     other = [o for o in catalog.get("additional_domains", []) if not o.get("pc_importable")]
