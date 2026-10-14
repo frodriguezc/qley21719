@@ -250,12 +250,109 @@ def test_fleet_software_prefers_csam_when_available():
 
 
 def test_reconcile_software_evidence_for_B():
-    sw = {"microsoft sql server 2019 15.0.2000", "postgresql 14.2"}
+    sw = {"microsoft sql server 2019 15.0.2000", "postgresql database 16.15"}
     rec = tcp.reconcile(CATALOG, Counter(), Counter(), sw, [])
     by_key = {r["key"]: r for r in rec["rows"]}
     assert by_key["mssql"]["sw_hit"] is True
     assert "microsoft sql server 2019 15.0.2000" in by_key["mssql"]["sw_matches"]
-    assert by_key["postgres"]["sw_matches"] == ["postgresql 14.2"]
+    assert by_key["postgres"]["sw_matches"] == ["postgresql database 16.15"]
+
+
+# --- servidor vs cliente: cada caso es un nombre REAL del inventario CSAM de un tenant (2026-10).
+# Un benchmark de DB evalúa la INSTANCIA; recomendarlo por un cliente manda al DBA a buscar bases
+# que no existen (y lo contrario la deja sin evaluar).
+
+def _db(sw):
+    rec = tcp.reconcile(CATALOG, Counter(), Counter(), set(sw), [])
+    return {r["key"]: r for r in rec["rows"]}
+
+
+def test_oracle_preinstall_e_instantclient_no_son_la_base():
+    """Antes 'oracle.*\\d+c\\b' tomaba el preinstall-19c como Oracle DB."""
+    r = _db(["oracle-database-preinstall-19c 1.0-4.el8.x86_64",
+             "oracle-database-preinstall-23ai 1.0-4.el8.x86_64",
+             "oracle-instantclient19.25-sqlplus 19.25.0.0.0-1.x86_64",
+             "oracle client for microsoft tools (64bit) 19.31"])["oracle_db"]
+    assert r["sw_hit"] is False and r["sw_matches"] == []
+    assert r["sw_clients"], "los clientes se informan en [C] como contexto"
+
+
+def test_oracle_motor_normalizado_por_csam_si_es_servidor():
+    """CSAM normaliza el motor como 'oracle 19 19.0.0.0.0': antes NO lo detectaba."""
+    r = _db(["oracle 19 19.0.0.0.0"])["oracle_db"]
+    assert r["sw_hit"] is True and r["sw_matches"] == ["oracle 19 19.0.0.0.0"]
+
+
+def test_oracle_no_confunde_paquetes_del_so():
+    r = _db(["oracle-cloud-agent 1.64.0-16.el8.x86_64", "oracle-logos 84.5-1.0.2.el8.x86_64",
+             "oracle-release-el8 1.0-3.el8.x86_64"])["oracle_db"]
+    assert r["sw_hit"] is False
+
+
+def test_postgres_libs_y_psql_son_cliente_server_es_servidor():
+    cli = _db(["postgresql15 15.7-3pgdg.rhel8.x86_64", "postgresql16-libs 16.3-3pgdg.rhel8.x86_64",
+               "postgresql16-odbc 18.00.0004-1pgdg.rhel9.8.x86_64",
+               "postgresql 10.23-4.0.1.module+el8.9.0+90164+87901204"])["postgres"]
+    assert cli["sw_hit"] is False and len(cli["sw_clients"]) == 4
+    srv = _db(["postgresql16-server 16.15-1pgdg.rhel9.8.x86_64", "postgresql database 10.23"])["postgres"]
+    assert srv["sw_hit"] is True and len(srv["sw_matches"]) == 2
+
+
+def test_postgres_instalador_windows_es_servidor():
+    """EDB en Windows: 'postgresql 16 16.4-1' (mayor, ESPACIO, versión) es el motor; el RPM
+    'postgresql 16.4-...' (sin espacio tras el mayor) es el cliente psql."""
+    assert _db(["postgresql 16 16.4-1"])["postgres"]["sw_hit"] is True
+    assert _db(["postgresql 16.4-1pgdg"])["postgres"]["sw_hit"] is False
+
+
+def test_mssql_no_se_cruza_con_mysql_server():
+    """'sql server' sin \\b tomaba 'mysql server 8.4' como SQL Server."""
+    d = _db(["mysql server 8.4 8.4.9"])
+    assert d["mssql"]["sw_hit"] is False
+    assert d["mysql"]["sw_hit"] is True
+
+
+def test_mssql_drivers_y_tools_son_cliente():
+    r = _db(["microsoft odbc driver 18 for sql server 18.6.1.1",
+             "microsoft ole db driver 19 for sql server 19.4.1.0",
+             "mssql-tools18 18.6.2.1-1",
+             "microsoft command line utilities 15 for sql server 15.0.4298.1"])["mssql"]
+    assert r["sw_hit"] is False and r["sw_clients"]
+
+
+def test_mysql_workbench_y_docs_no_son_servidor():
+    r = _db(["mysql workbench 8.0 ce 8.0.47", "mysql documents 5.7 5.7.44",
+             "mysql examples and samples 5.7 5.7.44", "mysql-release-el8 1.0-4.el8"])["mysql"]
+    assert r["sw_hit"] is False
+
+
+def test_mariadb_connector_es_libreria_cliente():
+    r = _db(["mariadb-connector-c 3.1.11-2.el8_3.x86_64"])["mariadb"]
+    assert r["sw_hit"] is False and r["sw_clients"]
+
+
+def test_mongodb_compass_es_gui_y_gnome_shell_no_es_mongo():
+    r = _db(["mongodb compass 1.49.4", "gnome-shell 40.10-35.el9_8.1.x86_64"])["mongodb"]
+    assert r["sw_hit"] is False
+    assert r["sw_clients"] == ["mongodb compass 1.49.4"], "gnome-shell no es un cliente Mongo"
+
+
+def test_faltantes_C_informa_los_clientes_vistos():
+    """Un DB visto solo como cliente cae en [C] con la evidencia, no en [B]."""
+    rec = tcp.reconcile(CATALOG, Counter(), Counter(),
+                        {"mariadb-connector-c 3.1.11-2.el8_3.x86_64", "postgresql database 16.15"}, [])
+    fleet = {"total": 0, "os_auth": Counter(), "os_unauth": Counter(),
+             "n_auth": 0, "n_unauth": 0, "no_os_auth": 0, "no_os_unauth": 0}
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "faltantes.txt"
+        tcp._write_faltantes(out, CATALOG, rec, fleet, False, [], "US03", "Ley 21.719 - X", "NOW")
+        text = out.read_text(encoding="utf-8")
+    b = _section(text, "[B] Detectados", "[C] DB")
+    c = _section(text, "[C] DB", "Fuera del alcance")
+    assert "PostgreSQL" in b, "el motor real sí va a [B]"
+    assert "MariaDB" not in b, "un conector cliente NO recomienda el benchmark"
+    mdb = next(l for l in c.splitlines() if "MariaDB" in l)
+    assert "solo CLIENTES vistos" in mdb and "mariadb-connector-c" in mdb
 
 
 def test_sw_evidence_dedupes_arch_and_caps():
